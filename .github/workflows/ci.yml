@@ -128,7 +128,7 @@ jobs:
           fi
 
       - name: Upload Archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: Typogenesis-Archive
           path: build/Typogenesis.xcarchive
