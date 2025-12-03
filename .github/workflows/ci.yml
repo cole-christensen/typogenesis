@@ -1,0 +1,135 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build:
+    name: Build & Test
+    runs-on: macos-14
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.2.app
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Cache Swift packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/org.swift.swiftpm
+            .build
+          key: ${{ runner.os }}-spm-${{ hashFiles('**/Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-
+
+      - name: Build
+        run: |
+          if [ -f "Package.swift" ]; then
+            swift build
+          elif [ -d "Typogenesis.xcodeproj" ]; then
+            xcodebuild -project Typogenesis.xcodeproj \
+              -scheme Typogenesis \
+              -destination 'platform=macOS' \
+              -configuration Debug \
+              build
+          fi
+
+      - name: Run Tests
+        run: |
+          if [ -f "Package.swift" ]; then
+            swift test
+          elif [ -d "Typogenesis.xcodeproj" ]; then
+            xcodebuild -project Typogenesis.xcodeproj \
+              -scheme Typogenesis \
+              -destination 'platform=macOS' \
+              -configuration Debug \
+              test
+          fi
+
+  lint:
+    name: Swift Lint
+    runs-on: macos-14
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SwiftLint
+        run: brew install swiftlint
+
+      - name: Run SwiftLint
+        run: |
+          if [ -f ".swiftlint.yml" ]; then
+            swiftlint lint --reporter github-actions-logging
+          else
+            echo "No .swiftlint.yml found, skipping lint"
+          fi
+
+  python-scripts:
+    name: Python Scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          if [ -f "scripts/requirements.txt" ]; then
+            pip install -r scripts/requirements.txt
+          fi
+
+      - name: Lint Python
+        run: |
+          pip install ruff
+          if [ -d "scripts" ]; then
+            ruff check scripts/ || true
+          fi
+
+      - name: Run Python tests
+        run: |
+          if [ -d "scripts" ] && [ -f "scripts/test_*.py" ]; then
+            pip install pytest
+            cd scripts && pytest
+          fi
+
+  archive:
+    name: Archive Build
+    runs-on: macos-14
+    timeout-minutes: 10
+    needs: [build, lint]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.2.app
+
+      - name: Archive
+        run: |
+          if [ -d "Typogenesis.xcodeproj" ]; then
+            xcodebuild -project Typogenesis.xcodeproj \
+              -scheme Typogenesis \
+              -destination 'generic/platform=macOS' \
+              -configuration Release \
+              -archivePath build/Typogenesis.xcarchive \
+              archive
+          fi
+
+      - name: Upload Archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: Typogenesis-Archive
+          path: build/Typogenesis.xcarchive
+          if-no-files-found: ignore
