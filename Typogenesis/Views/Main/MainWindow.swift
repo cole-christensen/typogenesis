@@ -110,21 +110,56 @@ struct WelcomeView: View {
 
 struct GlyphEditorContainer: View {
     @EnvironmentObject var appState: AppState
+    @State private var editorViewModel: GlyphEditorViewModel?
+    @State private var showAddGlyphSheet = false
 
     var body: some View {
         if let project = appState.currentProject {
             VSplitView {
-                GlyphGrid(project: project, selectedGlyph: $appState.selectedGlyph)
-                    .frame(minHeight: 150)
+                GlyphGrid(
+                    project: project,
+                    selectedGlyph: $appState.selectedGlyph,
+                    onAddGlyph: { showAddGlyphSheet = true }
+                )
+                .frame(minHeight: 150)
 
                 if let character = appState.selectedGlyph,
                    let glyph = project.glyph(for: character) {
-                    GlyphCanvas(glyph: glyph, metrics: project.metrics)
-                        .frame(minHeight: 400)
+                    InteractiveGlyphCanvas(
+                        viewModel: editorViewModel ?? GlyphEditorViewModel(glyph: glyph),
+                        metrics: project.metrics
+                    )
+                    .frame(minHeight: 400)
+                    .onChange(of: appState.selectedGlyph) { _, newChar in
+                        if let char = newChar, let g = project.glyph(for: char) {
+                            editorViewModel = GlyphEditorViewModel(glyph: g)
+                        }
+                    }
+                    .onChange(of: editorViewModel?.glyph) { _, newGlyph in
+                        if let glyph = newGlyph {
+                            appState.updateGlyph(glyph)
+                        }
+                    }
+                    .onAppear {
+                        editorViewModel = GlyphEditorViewModel(glyph: glyph)
+                    }
                 } else {
-                    Text("Select a glyph to edit")
-                        .foregroundColor(.secondary)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    VStack(spacing: 16) {
+                        Text("Select a glyph to edit")
+                            .foregroundColor(.secondary)
+
+                        Button("Add New Glyph") {
+                            showAddGlyphSheet = true
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+            .sheet(isPresented: $showAddGlyphSheet) {
+                AddGlyphSheet { character in
+                    appState.addGlyph(for: character)
+                    appState.selectedGlyph = character
                 }
             }
         }

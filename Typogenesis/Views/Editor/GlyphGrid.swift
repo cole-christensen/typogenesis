@@ -3,6 +3,7 @@ import SwiftUI
 struct GlyphGrid: View {
     let project: FontProject
     @Binding var selectedGlyph: Character?
+    var onAddGlyph: (() -> Void)?
 
     @State private var searchText = ""
     @State private var displayMode: DisplayMode = .grid
@@ -57,10 +58,11 @@ struct GlyphGrid: View {
             .frame(width: 80)
 
             Button {
-                // Add glyph
+                onAddGlyph?()
             } label: {
                 Image(systemName: "plus")
             }
+            .help("Add New Glyph")
         }
         .padding(8)
     }

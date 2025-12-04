@@ -85,4 +85,30 @@ final class AppState: ObservableObject {
         }
         UserDefaults.standard.set(recentProjects.map { $0.path }, forKey: "recentProjects")
     }
+
+    // MARK: - Glyph Management
+
+    func addGlyph(for character: Character) {
+        guard currentProject != nil else { return }
+
+        let glyph = Glyph(
+            character: character,
+            advanceWidth: currentProject!.metrics.unitsPerEm / 2,
+            leftSideBearing: currentProject!.metrics.unitsPerEm / 20
+        )
+        currentProject!.setGlyph(glyph, for: character)
+    }
+
+    func updateGlyph(_ glyph: Glyph) {
+        guard currentProject != nil else { return }
+        currentProject!.setGlyph(glyph, for: glyph.character)
+    }
+
+    func deleteGlyph(for character: Character) {
+        guard currentProject != nil else { return }
+        currentProject!.removeGlyph(for: character)
+        if selectedGlyph == character {
+            selectedGlyph = nil
+        }
+    }
 }
