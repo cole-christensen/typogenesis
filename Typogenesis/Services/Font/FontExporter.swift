@@ -20,7 +20,9 @@ actor FontExporter {
 
     enum ExportFormat {
         case ttf
-        case otf  // Not yet implemented
+        case otf   // Not yet implemented
+        case woff  // Web Open Font Format
+        case woff2 // Web Open Font Format 2.0 (Brotli compressed)
     }
 
     struct ExportOptions {
@@ -43,6 +45,16 @@ actor FontExporter {
             return try await exportTrueType(project: project, options: options)
         case .otf:
             throw FontExporterError.exportFailed("OTF export not yet implemented")
+        case .woff:
+            // First export to TTF, then convert to WOFF
+            let ttfData = try await exportTrueType(project: project, options: options)
+            let webExporter = WebFontExporter()
+            return try await webExporter.exportWOFF(ttfData: ttfData)
+        case .woff2:
+            // First export to TTF, then convert to WOFF2
+            let ttfData = try await exportTrueType(project: project, options: options)
+            let webExporter = WebFontExporter()
+            return try await webExporter.exportWOFF2(ttfData: ttfData)
         }
     }
 

@@ -20,15 +20,16 @@ struct ExportSheet: View {
 
         var isSupported: Bool {
             switch self {
-            case .ttf: return true
-            case .otf, .woff, .woff2, .ufo: return false
+            case .ttf, .woff: return true
+            case .otf, .woff2, .ufo: return false
             }
         }
 
         var statusText: String? {
             switch self {
-            case .ttf: return nil
-            case .otf, .woff, .woff2, .ufo: return "Coming soon"
+            case .ttf, .woff: return nil
+            case .woff2: return "Requires Brotli"
+            case .otf, .ufo: return "Coming soon"
             }
         }
     }
@@ -99,7 +100,7 @@ struct ExportSheet: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            if selectedFormat == .ttf {
+            if selectedFormat == .ttf || selectedFormat == .woff {
                 Toggle("Include kerning data", isOn: $includeKerning)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -153,18 +154,23 @@ struct ExportSheet: View {
 
         Task {
             do {
+                let exporter = FontExporter()
+                let format: FontExporter.ExportFormat
+
                 switch selectedFormat {
                 case .ttf:
-                    let exporter = FontExporter()
-                    let options = FontExporter.ExportOptions(
-                        format: .ttf,
-                        includeKerning: includeKerning
-                    )
-                    try await exporter.export(project: project, to: url, options: options)
-
-                case .otf, .woff, .woff2, .ufo:
+                    format = .ttf
+                case .woff:
+                    format = .woff
+                case .otf, .woff2, .ufo:
                     throw ExportError.unsupportedFormat
                 }
+
+                let options = FontExporter.ExportOptions(
+                    format: format,
+                    includeKerning: includeKerning
+                )
+                try await exporter.export(project: project, to: url, options: options)
 
                 await MainActor.run {
                     isExporting = false
