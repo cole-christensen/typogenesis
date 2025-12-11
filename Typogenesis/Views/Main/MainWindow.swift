@@ -45,9 +45,9 @@ struct ContentView: View {
         case .kerning:
             KerningEditor()
         case .generate:
-            GenerateViewPlaceholder()
+            GenerateView()
         case .handwriting:
-            HandwritingScannerPlaceholder()
+            HandwritingScanner()
         case .none:
             Text("Select an item from the sidebar")
                 .foregroundColor(.secondary)
@@ -187,23 +187,6 @@ struct GlyphEditorContainer: View {
     }
 }
 
-
-
-struct GenerateViewPlaceholder: View {
-    var body: some View {
-        Text("AI Generation")
-            .foregroundColor(.secondary)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-struct HandwritingScannerPlaceholder: View {
-    var body: some View {
-        Text("Handwriting Scanner")
-            .foregroundColor(.secondary)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
 
 #Preview {
     MainWindow()

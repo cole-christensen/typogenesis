@@ -457,10 +457,78 @@ struct InteractiveGlyphCanvas: View {
             }
             .disabled(!viewModel.canRedo)
             .help("Redo (⇧⌘Z)")
+
+            Divider()
+                .frame(width: 20)
+
+            pathOperationsMenu
         }
         .padding(8)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
         .padding(8)
+    }
+
+    private var pathOperationsMenu: some View {
+        Menu {
+            Section("Boolean Operations") {
+                Button("Union") {
+                    viewModel.unionSelectedContours()
+                }
+                .disabled(viewModel.selectedContourIndices.count < 2)
+
+                Button("Subtract") {
+                    viewModel.subtractSelectedContours()
+                }
+                .disabled(viewModel.selectedContourIndices.count != 2)
+
+                Button("Intersect") {
+                    viewModel.intersectSelectedContours()
+                }
+                .disabled(viewModel.selectedContourIndices.count < 2)
+
+                Button("Exclude (XOR)") {
+                    viewModel.xorSelectedContours()
+                }
+                .disabled(viewModel.selectedContourIndices.count < 2)
+            }
+
+            Divider()
+
+            Section("Path Cleanup") {
+                Button("Remove Overlaps") {
+                    viewModel.removeOverlaps()
+                }
+                .disabled(viewModel.glyph.outline.contours.isEmpty)
+
+                Button("Simplify Path") {
+                    viewModel.simplifyPath()
+                }
+                .disabled(viewModel.glyph.outline.contours.isEmpty)
+
+                Button("Correct Direction") {
+                    viewModel.normalizeWindingDirection()
+                }
+                .disabled(viewModel.glyph.outline.contours.isEmpty)
+            }
+
+            Divider()
+
+            Section("Offset") {
+                Button("Expand (+10)") {
+                    viewModel.offsetOutline(by: 10)
+                }
+                .disabled(viewModel.glyph.outline.contours.isEmpty)
+
+                Button("Contract (-10)") {
+                    viewModel.offsetOutline(by: -10)
+                }
+                .disabled(viewModel.glyph.outline.contours.isEmpty)
+            }
+        } label: {
+            Image(systemName: "square.on.square.intersection.dashed")
+        }
+        .menuStyle(.borderlessButton)
+        .help("Path Operations")
     }
 
     private var toolPicker: some View {

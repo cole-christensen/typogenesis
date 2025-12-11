@@ -513,4 +513,178 @@ final class GlyphEditorViewModel: ObservableObject {
             }
         }
     }
+
+    // MARK: - Path Boolean Operations
+
+    /// Get indices of selected contours
+    var selectedContourIndices: Set<Int> {
+        var indices: Set<Int> = []
+        for (contourIndex, contour) in glyph.outline.contours.enumerated() {
+            for point in contour.points {
+                if selectedPointIDs.contains(point.id) {
+                    indices.insert(contourIndex)
+                    break
+                }
+            }
+        }
+        return indices
+    }
+
+    /// Union selected contours
+    func unionSelectedContours() {
+        let indices = Array(selectedContourIndices).sorted()
+        guard indices.count >= 2 else { return }
+        saveStateForUndo()
+
+        do {
+            // Get first two selected contours
+            let outline1 = GlyphOutline(contours: [glyph.outline.contours[indices[0]]])
+            var resultOutline = outline1
+
+            for i in 1..<indices.count {
+                let outline2 = GlyphOutline(contours: [glyph.outline.contours[indices[i]]])
+                resultOutline = try PathOperations.perform(.union, on: resultOutline, with: outline2)
+            }
+
+            // Remove original contours (in reverse order to maintain indices)
+            for index in indices.reversed() {
+                glyph.outline.contours.remove(at: index)
+            }
+
+            // Add result contours
+            glyph.outline.contours.append(contentsOf: resultOutline.contours)
+            selectedPointIDs.removeAll()
+
+        } catch {
+            print("Union operation failed: \(error)")
+            undo()
+        }
+    }
+
+    /// Subtract second selected contour from first
+    func subtractSelectedContours() {
+        let indices = Array(selectedContourIndices).sorted()
+        guard indices.count == 2 else { return }
+        saveStateForUndo()
+
+        do {
+            let outline1 = GlyphOutline(contours: [glyph.outline.contours[indices[0]]])
+            let outline2 = GlyphOutline(contours: [glyph.outline.contours[indices[1]]])
+
+            let resultOutline = try PathOperations.perform(.subtract, on: outline1, with: outline2)
+
+            // Remove original contours (in reverse order)
+            glyph.outline.contours.remove(at: indices[1])
+            glyph.outline.contours.remove(at: indices[0])
+
+            // Add result contours
+            glyph.outline.contours.append(contentsOf: resultOutline.contours)
+            selectedPointIDs.removeAll()
+
+        } catch {
+            print("Subtract operation failed: \(error)")
+            undo()
+        }
+    }
+
+    /// Intersect selected contours
+    func intersectSelectedContours() {
+        let indices = Array(selectedContourIndices).sorted()
+        guard indices.count >= 2 else { return }
+        saveStateForUndo()
+
+        do {
+            let outline1 = GlyphOutline(contours: [glyph.outline.contours[indices[0]]])
+            var resultOutline = outline1
+
+            for i in 1..<indices.count {
+                let outline2 = GlyphOutline(contours: [glyph.outline.contours[indices[i]]])
+                resultOutline = try PathOperations.perform(.intersect, on: resultOutline, with: outline2)
+            }
+
+            // Remove original contours (in reverse order)
+            for index in indices.reversed() {
+                glyph.outline.contours.remove(at: index)
+            }
+
+            // Add result contours
+            glyph.outline.contours.append(contentsOf: resultOutline.contours)
+            selectedPointIDs.removeAll()
+
+        } catch {
+            print("Intersect operation failed: \(error)")
+            undo()
+        }
+    }
+
+    /// XOR selected contours (exclude overlapping areas)
+    func xorSelectedContours() {
+        let indices = Array(selectedContourIndices).sorted()
+        guard indices.count >= 2 else { return }
+        saveStateForUndo()
+
+        do {
+            let outline1 = GlyphOutline(contours: [glyph.outline.contours[indices[0]]])
+            var resultOutline = outline1
+
+            for i in 1..<indices.count {
+                let outline2 = GlyphOutline(contours: [glyph.outline.contours[indices[i]]])
+                resultOutline = try PathOperations.perform(.xor, on: resultOutline, with: outline2)
+            }
+
+            // Remove original contours (in reverse order)
+            for index in indices.reversed() {
+                glyph.outline.contours.remove(at: index)
+            }
+
+            // Add result contours
+            glyph.outline.contours.append(contentsOf: resultOutline.contours)
+            selectedPointIDs.removeAll()
+
+        } catch {
+            print("XOR operation failed: \(error)")
+            undo()
+        }
+    }
+
+    /// Remove overlapping regions within all contours
+    func removeOverlaps() {
+        guard glyph.outline.contours.count > 0 else { return }
+        saveStateForUndo()
+
+        do {
+            let resultOutline = try PathOperations.removeOverlaps(glyph.outline)
+            glyph.outline = resultOutline
+            selectedPointIDs.removeAll()
+        } catch {
+            print("Remove overlaps failed: \(error)")
+            undo()
+        }
+    }
+
+    /// Simplify path by removing redundant points
+    func simplifyPath(tolerance: CGFloat = 2.0) {
+        saveStateForUndo()
+        glyph.outline = PathOperations.simplify(glyph.outline, tolerance: tolerance)
+        selectedPointIDs.removeAll()
+    }
+
+    /// Normalize winding direction of all contours
+    func normalizeWindingDirection(clockwise: Bool = true) {
+        saveStateForUndo()
+        glyph.outline = PathOperations.normalizeWindingDirection(glyph.outline, clockwise: clockwise)
+    }
+
+    /// Offset (expand/contract) the outline
+    func offsetOutline(by amount: CGFloat) {
+        saveStateForUndo()
+
+        do {
+            glyph.outline = try PathOperations.offset(glyph.outline, by: amount)
+            selectedPointIDs.removeAll()
+        } catch {
+            print("Offset operation failed: \(error)")
+            undo()
+        }
+    }
 }
