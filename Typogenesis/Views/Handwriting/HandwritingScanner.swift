@@ -12,6 +12,10 @@ struct HandwritingScanner: View {
     @State private var threshold: Double = 0.5
     @State private var simplification: Double = 2.0
     @State private var showSampleSheetInfo = false
+    @State private var processingError: String?
+    @State private var replaceExisting = false
+    @State private var autoFitMetrics = true
+    @State private var generateKerning = false
 
     enum ScannerStep: Int, CaseIterable {
         case upload = 0
@@ -41,6 +45,7 @@ struct HandwritingScanner: View {
     struct DetectedCharacter: Identifiable {
         let id = UUID()
         var boundingBox: CGRect
+        var outline: GlyphOutline?  // Vectorized outline
         var assignedCharacter: Character?
         var isSelected = false
     }
@@ -339,6 +344,19 @@ struct HandwritingScanner: View {
                     .font(.caption)
                     .foregroundColor(.green)
             }
+
+            if let error = processingError {
+                HStack {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.orange)
+                    Text(error)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .padding(8)
+                .background(Color.orange.opacity(0.1))
+                .cornerRadius(4)
+            }
         }
     }
 
@@ -465,9 +483,10 @@ struct HandwritingScanner: View {
                     .font(.subheadline)
                     .fontWeight(.medium)
 
-                Toggle("Replace existing glyphs", isOn: .constant(false))
-                Toggle("Auto-fit to metrics", isOn: .constant(true))
-                Toggle("Generate kerning", isOn: .constant(false))
+                Toggle("Replace existing glyphs", isOn: $replaceExisting)
+                Toggle("Auto-fit to metrics", isOn: $autoFitMetrics)
+                Toggle("Generate kerning", isOn: $generateKerning)
+                    .disabled(true) // Not yet implemented
             }
 
             Divider()
@@ -660,28 +679,48 @@ struct HandwritingScanner: View {
     }
 
     private func processImage() {
-        guard uploadedImage != nil else { return }
+        guard let image = uploadedImage else { return }
 
         isProcessing = true
+        processingError = nil
 
-        // Simulate processing
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-            // Generate mock detected characters
-            detectedCharacters = (0..<26).map { i in
-                let row = i / 5
-                let col = i % 5
-                return DetectedCharacter(
-                    boundingBox: CGRect(
-                        x: 50 + col * 100,
-                        y: 50 + row * 100,
-                        width: 80,
-                        height: 80
-                    )
+        Task {
+            do {
+                // Get metrics from current project or use defaults
+                let metrics = appState.currentProject?.metrics ?? FontMetrics()
+
+                // Create processing settings from UI values
+                var settings = Vectorizer.VectorizationSettings.default
+                settings.imageProcessing.threshold = threshold
+                settings.tracing.simplificationTolerance = CGFloat(simplification)
+
+                // Vectorize the image
+                let result = try await Vectorizer.vectorize(
+                    image: image,
+                    metrics: metrics,
+                    settings: settings
                 )
-            }
 
-            isProcessing = false
-            currentStep = .assign
+                // Convert to detected characters
+                detectedCharacters = result.characters.map { vectorized in
+                    DetectedCharacter(
+                        boundingBox: vectorized.bounds,
+                        outline: vectorized.outline,
+                        assignedCharacter: nil
+                    )
+                }
+
+                isProcessing = false
+
+                if detectedCharacters.isEmpty {
+                    processingError = "No characters detected. Try adjusting the threshold."
+                } else {
+                    currentStep = .assign
+                }
+            } catch {
+                isProcessing = false
+                processingError = error.localizedDescription
+            }
         }
     }
 
@@ -695,8 +734,47 @@ struct HandwritingScanner: View {
     }
 
     private func importGlyphs() {
-        // Would import glyphs to font project
-        // For now just close/reset
+        guard var project = appState.currentProject else { return }
+
+        // Import each assigned character as a glyph
+        for detected in detectedCharacters {
+            guard let char = detected.assignedCharacter,
+                  let outline = detected.outline else { continue }
+
+            // Check if glyph already exists
+            if let existingGlyph = project.glyphs[char] {
+                if replaceExisting {
+                    // Replace existing glyph
+                    var glyph = existingGlyph
+                    glyph.outline = outline
+                    if autoFitMetrics {
+                        let bounds = outline.boundingBox
+                        glyph.advanceWidth = bounds.width + Int(CGFloat(project.metrics.unitsPerEm) * 0.2)
+                    }
+                    project.glyphs[char] = glyph
+                }
+                // If not replacing, skip
+            } else {
+                // Create new glyph
+                let bounds = outline.boundingBox
+                let advanceWidth = autoFitMetrics
+                    ? bounds.width + Int(CGFloat(project.metrics.unitsPerEm) * 0.2)
+                    : project.metrics.unitsPerEm / 2
+
+                let glyph = Glyph(
+                    character: char,
+                    outline: outline,
+                    advanceWidth: advanceWidth,
+                    leftSideBearing: Int(CGFloat(project.metrics.unitsPerEm) * 0.1)
+                )
+                project.glyphs[char] = glyph
+            }
+        }
+
+        // Update project
+        appState.currentProject = project
+
+        // Reset scanner
         uploadedImage = nil
         detectedCharacters = []
         currentStep = .upload
