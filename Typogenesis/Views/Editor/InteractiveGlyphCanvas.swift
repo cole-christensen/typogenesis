@@ -57,15 +57,41 @@ struct InteractiveGlyphCanvas: View {
             .overlay(alignment: .topLeading) {
                 toolPicker
             }
+            .overlay(alignment: .bottom) {
+                statusBar
+            }
         }
         .onKeyPress(keys: [.delete, .deleteForward]) { _ in
             viewModel.deleteSelectedPoints()
             return .handled
         }
+        .onKeyPress(.escape) {
+            if viewModel.isDrawingPath {
+                viewModel.finishPenPath()
+                return .handled
+            }
+            viewModel.clearSelection()
+            return .handled
+        }
+        .onKeyPress(.return) {
+            if viewModel.isDrawingPath {
+                viewModel.closePenPath()
+                return .handled
+            }
+            return .ignored
+        }
         .onKeyPress(characters: .alphanumerics) { press in
             // Handle keyboard shortcuts
             if press.key == KeyEquivalent("t") && press.modifiers.isEmpty {
                 viewModel.togglePointType()
+                return .handled
+            }
+            if press.key == KeyEquivalent("s") && press.modifiers.isEmpty && !viewModel.selectedPointIDs.isEmpty {
+                viewModel.smoothSelectedPoints()
+                return .handled
+            }
+            if press.key == KeyEquivalent("c") && press.modifiers.isEmpty && !viewModel.selectedPointIDs.isEmpty {
+                viewModel.cornerSelectedPoints()
                 return .handled
             }
             return .ignored
@@ -109,13 +135,12 @@ struct InteractiveGlyphCanvas: View {
                 case .select:
                     handleSelectDrag(value: value, glyphPoint: glyphPoint, screenTolerance: screenTolerance, size: size)
                 case .pen:
-                    // Pen tool handled on tap
-                    break
+                    handlePenDrag(value: value, glyphPoint: glyphPoint, size: size)
                 case .addPoint:
-                    // Add point handled on tap
+                    // Add point handled on tap end
                     break
                 case .deletePoint:
-                    // Delete handled on tap
+                    // Delete handled on tap end
                     break
                 }
             }
@@ -126,7 +151,9 @@ struct InteractiveGlyphCanvas: View {
                 switch viewModel.currentTool {
                 case .select:
                     handleSelectEnd()
-                case .pen, .addPoint:
+                case .pen:
+                    handlePenEnd(value: value, glyphPoint: glyphPoint, size: size)
+                case .addPoint:
                     if value.translation.width.magnitude < 3 && value.translation.height.magnitude < 3 {
                         viewModel.addPoint(at: glyphPoint)
                     }
@@ -196,6 +223,37 @@ struct InteractiveGlyphCanvas: View {
         currentDragHit = nil
         lastDragPosition = nil
         viewModel.endDrag()
+    }
+
+    // MARK: - Pen Tool Handling
+
+    @State private var penDragStartPoint: CGPoint?
+
+    private func handlePenDrag(value: DragGesture.Value, glyphPoint: CGPoint, size: CGSize) {
+        if penDragStartPoint == nil {
+            penDragStartPoint = glyphPoint
+        }
+
+        // If we're dragging significantly, show control handles preview
+        if value.translation.width.magnitude > 5 || value.translation.height.magnitude > 5 {
+            if let startPoint = penDragStartPoint {
+                viewModel.penToolDrag(from: startPoint, to: glyphPoint)
+            }
+        }
+    }
+
+    private func handlePenEnd(value: DragGesture.Value, glyphPoint: CGPoint, size: CGSize) {
+        let wasDragging = value.translation.width.magnitude > 5 || value.translation.height.magnitude > 5
+
+        if wasDragging {
+            // Drag ended - control handles already set via penToolDrag
+            penDragStartPoint = nil
+        } else {
+            // Simple click - add a corner point
+            viewModel.penToolClick(at: glyphPoint)
+        }
+
+        penDragStartPoint = nil
     }
 
     private var magnificationGesture: some Gesture {
@@ -431,6 +489,59 @@ struct InteractiveGlyphCanvas: View {
         case .addPoint: return "plus.circle"
         case .deletePoint: return "minus.circle"
         }
+    }
+
+    @ViewBuilder
+    private var statusBar: some View {
+        HStack {
+            // Tool info
+            Text(viewModel.currentTool.rawValue)
+                .fontWeight(.medium)
+
+            Divider()
+                .frame(height: 16)
+
+            // Context-specific info
+            if viewModel.isDrawingPath {
+                HStack(spacing: 8) {
+                    Image(systemName: "pencil.tip.crop.circle")
+                        .foregroundColor(.orange)
+                    Text("Drawing path")
+                    Text("•")
+                        .foregroundColor(.secondary)
+                    Text("Return: close")
+                        .foregroundColor(.secondary)
+                    Text("Esc: finish")
+                        .foregroundColor(.secondary)
+                }
+            } else if !viewModel.selectedPointIDs.isEmpty {
+                HStack(spacing: 8) {
+                    Text("\(viewModel.selectedPointIDs.count) point\(viewModel.selectedPointIDs.count == 1 ? "" : "s") selected")
+                    Text("•")
+                        .foregroundColor(.secondary)
+                    Text("T: toggle type")
+                        .foregroundColor(.secondary)
+                    Text("S: smooth")
+                        .foregroundColor(.secondary)
+                    Text("C: corner")
+                        .foregroundColor(.secondary)
+                }
+            } else {
+                Text("\(viewModel.glyph.outline.contours.count) contour\(viewModel.glyph.outline.contours.count == 1 ? "" : "s")")
+                    .foregroundColor(.secondary)
+            }
+
+            Spacer()
+
+            // Scale indicator
+            Text("\(Int(scale * 100))%")
+                .foregroundColor(.secondary)
+                .monospacedDigit()
+        }
+        .font(.caption)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(.regularMaterial)
     }
 }
 

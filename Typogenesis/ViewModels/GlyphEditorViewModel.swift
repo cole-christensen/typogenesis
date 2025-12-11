@@ -9,6 +9,11 @@ final class GlyphEditorViewModel: ObservableObject {
     @Published var currentTool: EditorTool = .select
     @Published var isDragging = false
 
+    // Pen tool state
+    @Published var isDrawingPath = false
+    @Published var currentContourIndex: Int?
+    @Published var pendingPoint: CGPoint?
+
     private var undoStack: [Glyph] = []
     private var redoStack: [Glyph] = []
     private let maxUndoLevels = 50
@@ -264,5 +269,248 @@ final class GlyphEditorViewModel: ObservableObject {
 
     func endDrag() {
         isDragging = false
+    }
+
+    // MARK: - Pen Tool Operations
+
+    /// Start drawing a new contour or continue an existing one
+    func penToolClick(at position: CGPoint) {
+        // Check if clicking near the first point of current contour (to close it)
+        if isDrawingPath,
+           let contourIndex = currentContourIndex,
+           contourIndex < glyph.outline.contours.count {
+            let contour = glyph.outline.contours[contourIndex]
+            if let firstPoint = contour.points.first {
+                let distance = hypot(position.x - firstPoint.position.x, position.y - firstPoint.position.y)
+                if distance < 15 && contour.points.count >= 3 {
+                    // Close the contour
+                    closePenPath()
+                    return
+                }
+            }
+        }
+
+        // Check if clicking on an existing point to start extending from there
+        if !isDrawingPath {
+            if let hitResult = hitTest(point: position, tolerance: 12) {
+                if case let .point(contourIndex, pointIndex, _) = hitResult {
+                    let contour = glyph.outline.contours[contourIndex]
+                    // Can only extend from endpoints
+                    if pointIndex == 0 || pointIndex == contour.points.count - 1 {
+                        saveStateForUndo()
+                        isDrawingPath = true
+                        currentContourIndex = contourIndex
+                        selectedPointIDs = [contour.points[pointIndex].id]
+                        return
+                    }
+                }
+            }
+        }
+
+        // Add a new point
+        saveStateForUndo()
+
+        let newPoint = PathPoint(position: position, type: .corner)
+
+        if isDrawingPath, let contourIndex = currentContourIndex, contourIndex < glyph.outline.contours.count {
+            // Add to current contour
+            glyph.outline.contours[contourIndex].points.append(newPoint)
+        } else {
+            // Start a new contour
+            let newContour = Contour(points: [newPoint], isClosed: false)
+            glyph.outline.contours.append(newContour)
+            currentContourIndex = glyph.outline.contours.count - 1
+            isDrawingPath = true
+        }
+
+        selectedPointIDs = [newPoint.id]
+    }
+
+    /// Add a curve point with control handles while drawing
+    func penToolDrag(from startPosition: CGPoint, to currentPosition: CGPoint) {
+        guard isDrawingPath,
+              let contourIndex = currentContourIndex,
+              contourIndex < glyph.outline.contours.count,
+              !glyph.outline.contours[contourIndex].points.isEmpty else { return }
+
+        let lastPointIndex = glyph.outline.contours[contourIndex].points.count - 1
+
+        // Calculate control handles based on drag
+        let dx = currentPosition.x - startPosition.x
+        let dy = currentPosition.y - startPosition.y
+
+        // Set the control out handle
+        glyph.outline.contours[contourIndex].points[lastPointIndex].controlOut = currentPosition
+        glyph.outline.contours[contourIndex].points[lastPointIndex].type = .smooth
+
+        // Set opposite control in handle (symmetric)
+        glyph.outline.contours[contourIndex].points[lastPointIndex].controlIn = CGPoint(
+            x: startPosition.x - dx,
+            y: startPosition.y - dy
+        )
+    }
+
+    /// Close the current path being drawn
+    func closePenPath() {
+        guard isDrawingPath,
+              let contourIndex = currentContourIndex,
+              contourIndex < glyph.outline.contours.count else { return }
+
+        glyph.outline.contours[contourIndex].isClosed = true
+        finishPenPath()
+    }
+
+    /// Finish drawing without closing (open path)
+    func finishPenPath() {
+        isDrawingPath = false
+        currentContourIndex = nil
+        pendingPoint = nil
+        selectedPointIDs.removeAll()
+    }
+
+    /// Cancel the current drawing operation
+    func cancelPenPath() {
+        guard isDrawingPath,
+              let contourIndex = currentContourIndex else {
+            finishPenPath()
+            return
+        }
+
+        // Remove the contour if it only has one point
+        if contourIndex < glyph.outline.contours.count {
+            if glyph.outline.contours[contourIndex].points.count <= 1 {
+                glyph.outline.contours.remove(at: contourIndex)
+            }
+        }
+
+        finishPenPath()
+        undo()  // Undo the entire drawing operation
+    }
+
+    // MARK: - Contour Operations
+
+    /// Create a new contour from the selected points
+    func createContourFromSelection() {
+        guard selectedPointIDs.count >= 2 else { return }
+        saveStateForUndo()
+
+        var newPoints: [PathPoint] = []
+
+        // Collect selected points in order
+        for contour in glyph.outline.contours {
+            for point in contour.points {
+                if selectedPointIDs.contains(point.id) {
+                    newPoints.append(PathPoint(
+                        position: point.position,
+                        type: point.type,
+                        controlIn: point.controlIn,
+                        controlOut: point.controlOut
+                    ))
+                }
+            }
+        }
+
+        if newPoints.count >= 2 {
+            let newContour = Contour(points: newPoints, isClosed: false)
+            glyph.outline.contours.append(newContour)
+        }
+    }
+
+    /// Reverse the direction of a contour
+    func reverseContour(at contourIndex: Int) {
+        guard contourIndex < glyph.outline.contours.count else { return }
+        saveStateForUndo()
+
+        let reversedPoints = glyph.outline.contours[contourIndex].points.reversed().map { point in
+            // Swap control in and control out
+            PathPoint(
+                id: point.id,
+                position: point.position,
+                type: point.type,
+                controlIn: point.controlOut,
+                controlOut: point.controlIn
+            )
+        }
+
+        glyph.outline.contours[contourIndex].points = Array(reversedPoints)
+    }
+
+    /// Delete an entire contour
+    func deleteContour(at contourIndex: Int) {
+        guard contourIndex < glyph.outline.contours.count else { return }
+        saveStateForUndo()
+
+        // Clear selection of points in this contour
+        let pointIDs = Set(glyph.outline.contours[contourIndex].points.map { $0.id })
+        selectedPointIDs.subtract(pointIDs)
+
+        glyph.outline.contours.remove(at: contourIndex)
+    }
+
+    /// Toggle whether a contour is closed
+    func toggleContourClosed(at contourIndex: Int) {
+        guard contourIndex < glyph.outline.contours.count else { return }
+        saveStateForUndo()
+
+        glyph.outline.contours[contourIndex].isClosed.toggle()
+    }
+
+    // MARK: - Point Smoothing
+
+    /// Convert selected corner points to smooth curves
+    func smoothSelectedPoints() {
+        guard !selectedPointIDs.isEmpty else { return }
+        saveStateForUndo()
+
+        for contourIndex in glyph.outline.contours.indices {
+            let contour = glyph.outline.contours[contourIndex]
+            for pointIndex in contour.points.indices {
+                let point = contour.points[pointIndex]
+                guard selectedPointIDs.contains(point.id) else { continue }
+
+                // Get neighboring points
+                let prevIndex = pointIndex > 0 ? pointIndex - 1 : (contour.isClosed ? contour.points.count - 1 : nil)
+                let nextIndex = pointIndex < contour.points.count - 1 ? pointIndex + 1 : (contour.isClosed ? 0 : nil)
+
+                guard let prev = prevIndex, let next = nextIndex else { continue }
+
+                let prevPoint = contour.points[prev]
+                let nextPoint = contour.points[next]
+
+                // Calculate smooth control handles
+                let dx = nextPoint.position.x - prevPoint.position.x
+                let dy = nextPoint.position.y - prevPoint.position.y
+                let handleLength = hypot(dx, dy) * 0.25
+
+                let angle = atan2(dy, dx)
+
+                glyph.outline.contours[contourIndex].points[pointIndex].type = .smooth
+                glyph.outline.contours[contourIndex].points[pointIndex].controlIn = CGPoint(
+                    x: point.position.x - cos(angle) * handleLength,
+                    y: point.position.y - sin(angle) * handleLength
+                )
+                glyph.outline.contours[contourIndex].points[pointIndex].controlOut = CGPoint(
+                    x: point.position.x + cos(angle) * handleLength,
+                    y: point.position.y + sin(angle) * handleLength
+                )
+            }
+        }
+    }
+
+    /// Convert selected points to corner points (remove handles)
+    func cornerSelectedPoints() {
+        guard !selectedPointIDs.isEmpty else { return }
+        saveStateForUndo()
+
+        for contourIndex in glyph.outline.contours.indices {
+            for pointIndex in glyph.outline.contours[contourIndex].points.indices {
+                let point = glyph.outline.contours[contourIndex].points[pointIndex]
+                if selectedPointIDs.contains(point.id) {
+                    glyph.outline.contours[contourIndex].points[pointIndex].type = .corner
+                    glyph.outline.contours[contourIndex].points[pointIndex].controlIn = nil
+                    glyph.outline.contours[contourIndex].points[pointIndex].controlOut = nil
+                }
+            }
+        }
     }
 }
