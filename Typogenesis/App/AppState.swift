@@ -1,5 +1,6 @@
 import SwiftUI
 import Combine
+import UniformTypeIdentifiers
 
 @MainActor
 final class AppState: ObservableObject {
@@ -9,6 +10,9 @@ final class AppState: ObservableObject {
     @Published var showNewProjectSheet = false
     @Published var selectedGlyph: Character?
     @Published var sidebarSelection: SidebarItem? = .glyphs
+    @Published var isImporting = false
+    @Published var importError: String?
+    @Published var showImportError = false
 
     enum SidebarItem: Hashable {
         case glyphs
@@ -19,6 +23,7 @@ final class AppState: ObservableObject {
     }
 
     private let projectStorage = ProjectStorage()
+    private let fontParser = FontParser()
 
     init() {
         loadRecentProjects()
@@ -109,6 +114,36 @@ final class AppState: ObservableObject {
         currentProject!.removeGlyph(for: character)
         if selectedGlyph == character {
             selectedGlyph = nil
+        }
+    }
+
+    // MARK: - Font Import
+
+    func importFont() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [
+            UTType(filenameExtension: "ttf")!,
+            UTType(filenameExtension: "otf")!
+        ]
+        panel.allowsMultipleSelection = false
+        panel.message = "Select a TrueType (.ttf) or OpenType (.otf) font to import"
+        panel.prompt = "Import"
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        isImporting = true
+
+        Task {
+            do {
+                let project = try await fontParser.parse(url: url)
+                currentProject = project
+                selectedGlyph = nil
+                isImporting = false
+            } catch {
+                isImporting = false
+                importError = error.localizedDescription
+                showImportError = true
+            }
         }
     }
 }

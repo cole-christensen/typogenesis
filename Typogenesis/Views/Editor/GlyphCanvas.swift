@@ -91,8 +91,6 @@ struct GlyphCanvas: View {
         let left = CGPoint(x: 0, y: 0).applying(inverseTransform).x
         let right = CGPoint(x: size.width, y: 0).applying(inverseTransform).x
 
-        var path = Path()
-
         let metricsLines: [(Int, Color)] = [
             (metrics.baseline, .blue),
             (metrics.xHeight, .green),

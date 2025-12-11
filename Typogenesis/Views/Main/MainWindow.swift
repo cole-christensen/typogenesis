@@ -41,9 +41,9 @@ struct ContentView: View {
         case .glyphs:
             GlyphEditorContainer()
         case .metrics:
-            MetricsEditorPlaceholder()
+            MetricsEditor()
         case .kerning:
-            KerningEditorPlaceholder()
+            KerningEditor()
         case .generate:
             GenerateViewPlaceholder()
         case .handwriting:
@@ -79,6 +79,13 @@ struct WelcomeView: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
 
+                Button("Import Font (.ttf/.otf)...") {
+                    appState.importFont()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .disabled(appState.isImporting)
+
                 Button("Open Existing Project...") {
                     appState.openProject()
                 }
@@ -86,6 +93,15 @@ struct WelcomeView: View {
                 .controlSize(.large)
             }
             .padding(.top)
+
+            if appState.isImporting {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .scaleEffect(0.8)
+                    Text("Importing font...")
+                        .foregroundColor(.secondary)
+                }
+            }
 
             if !appState.recentProjects.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
@@ -105,6 +121,11 @@ struct WelcomeView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
+        .alert("Import Error", isPresented: $appState.showImportError) {
+            Button("OK") {}
+        } message: {
+            Text(appState.importError ?? "Unknown error")
+        }
     }
 }
 
@@ -166,21 +187,7 @@ struct GlyphEditorContainer: View {
     }
 }
 
-struct MetricsEditorPlaceholder: View {
-    var body: some View {
-        Text("Metrics Editor")
-            .foregroundColor(.secondary)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
 
-struct KerningEditorPlaceholder: View {
-    var body: some View {
-        Text("Kerning Editor")
-            .foregroundColor(.secondary)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
 
 struct GenerateViewPlaceholder: View {
     var body: some View {

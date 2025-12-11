@@ -152,3 +152,161 @@ TypogenesisTests/
 ### Next Steps
 - Issue #1: Set up proper Xcode project with app bundle
 - Begin Phase 2: Font I/O (TTF/OTF parsing and export)
+
+---
+
+## 2025-12-11: Phase 2 - Font I/O Implementation
+
+### Summary
+Completed the core of Phase 2 (Font I/O) by implementing full TrueType font parsing and export capabilities. Users can now import existing TTF fonts and export their projects as valid TrueType fonts.
+
+### Completed
+
+**OpenType Data Structures**
+- Complete OpenType/TrueType binary format structures
+- All required tables: head, hhea, maxp, OS/2, name, cmap, post, glyf, loca, hmtx
+- Kerning support via kern table
+- Big-endian binary reading/writing extensions for Data
+- Checksum calculation for font validation
+- Fixed-point number handling (Fixed, LongDateTime)
+
+**FontParser Service**
+- Full TTF/OTF file parsing
+- Offset table and table directory parsing
+- cmap format 0, 4, and 12 support (character to glyph mapping)
+- Simple and composite glyph parsing
+- TrueType quadratic bezier to cubic bezier conversion
+- Horizontal metrics extraction
+- Name table parsing for font metadata
+- Kerning pair extraction
+
+**FontExporter Service**
+- Export FontProject to valid TrueType (.ttf) files
+- All required OpenType tables generated
+- Cubic bezier to TrueType quadratic conversion
+- Optional kerning table generation
+- Proper checksum calculation including checksumAdjustment
+
+**UI Integration**
+- Import Font button on welcome screen
+  - Supports .ttf and .otf files
+  - Loading indicator during import
+  - Error handling with user-friendly alerts
+- Export Sheet updated with working TTF export
+  - Format selection (TTF supported, others marked "Coming soon")
+  - Optional kerning inclusion toggle
+  - Progress indicator during export
+  - Error handling
+
+**Tests**
+- 29 new tests for font I/O functionality
+- FontParser tests (binary reading, offset table, checksums)
+- FontExporter tests (export validation, required tables, kerning)
+- Round-trip tests (export → parse preserves data)
+- Glyph outline conversion tests
+- Clamping tests for safe integer conversion
+
+**New Files**
+```
+Typogenesis/Services/Font/
+├── OpenTypeStructures.swift  # OpenType binary format types
+├── FontParser.swift          # TTF/OTF parsing
+└── FontExporter.swift        # TTF export
+
+TypogenesisTests/
+└── FontIOTests.swift         # 29 new tests
+```
+
+**Test Results**: 61 total tests, all passing
+
+### Technical Details
+
+The implementation follows the OpenType specification for TrueType-flavored fonts:
+- Binary format uses big-endian byte order
+- Tables are padded to 4-byte boundaries
+- Glyph 0 is always .notdef
+- cmap format 4 used for BMP character mapping
+- Simple glyphs use coordinate deltas with flag-based encoding
+
+Round-trip fidelity:
+- Glyph count preserved
+- Character set preserved
+- Advance widths preserved
+- Font metrics (ascender, descender, lineGap, unitsPerEm) preserved
+- Family and style names preserved
+
+### Known Limitations
+- OTF (CFF-based) import works but export not yet implemented
+- WOFF/WOFF2 export not yet implemented
+- UFO format not yet implemented
+- Composite glyphs imported but flattened on export
+- TrueType hinting not preserved
+
+### Next Steps
+- Phase 3: Professional glyph editing tools (bezier pen, path operations)
+- Add metrics editor UI
+- Add kerning editor UI
+- Consider WOFF export for web fonts
+
+---
+
+## 2025-12-11: Phase 3 Progress - Metrics & Kerning Editors
+
+### Summary
+Added functional Metrics Editor and Kerning Editor UIs, making the app more complete for font creation workflows.
+
+### Completed
+
+**Metrics Editor** (`Views/Metrics/MetricsEditor.swift`)
+- Form-based editor for all font metrics:
+  - Units Per Em
+  - Ascender, Descender
+  - Cap Height, x-Height
+  - Line Gap
+- Live preview canvas showing metric lines
+- Sample text preview with metric visualization
+- Apply/Reset functionality
+- Font info display (family, style, glyph count, kerning pairs)
+
+**Kerning Editor** (`Views/Kerning/KerningEditor.swift`)
+- List view of all kerning pairs with value display
+- Quick-add section for rapid pair entry
+- Full add/edit/delete for kerning pairs
+- Value adjustment with stepper controls
+- Live preview canvas showing kerning in action
+- Highlighted pair visualization
+- Common pairs suggestions (AV, AW, AT, etc.)
+- Context menu for deletion
+
+**New Files**
+```
+Typogenesis/Views/
+├── Metrics/
+│   └── MetricsEditor.swift
+└── Kerning/
+    └── KerningEditor.swift
+```
+
+**Test Results**: 61 tests, all passing
+
+### UI Features
+Both editors integrate seamlessly with the existing sidebar navigation:
+- Click "Metrics" in sidebar → Opens Metrics Editor
+- Click "Kerning" in sidebar → Opens Kerning Editor
+- Changes update the project state and persist on save/export
+
+### Current App Capabilities
+Users can now:
+1. Create new font projects
+2. Import existing TTF/OTF fonts
+3. Add/edit/delete glyphs with interactive bezier editing
+4. Edit all font metrics with live preview
+5. Manage kerning pairs with visual preview
+6. Export to TrueType (.ttf) format
+7. Save/load projects in native format
+
+### Next Steps
+- Bezier pen tool for freehand path drawing
+- Path operations (union, subtract, intersect)
+- AI generation placeholder UI
+- Handwriting scanner placeholder UI
