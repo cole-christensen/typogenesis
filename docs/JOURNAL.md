@@ -602,3 +602,95 @@ Users can now:
 - Phase 6: Polish, WOFF export, variable fonts, App Store preparation
 - Consider adding real-time preview of vectorization
 - Add more sample sheet templates
+
+---
+
+## 2025-12-11: Phase 5 Foundation + WOFF Export
+
+### Summary
+Added AI service infrastructure with geometric fallbacks, and implemented WOFF web font export. The app now supports exporting to both TTF and WOFF formats for desktop and web use.
+
+### Completed
+
+**AI Model Management** (`Services/AI/ModelManager.swift`)
+- MainActor-safe singleton for model lifecycle
+- Support for three model types: GlyphDiffusion, StyleEncoder, KerningNet
+- Model states: not downloaded, downloading, downloaded, loading, loaded, error
+- Download simulation and auto-load after download
+- Memory management with load/unload capabilities
+
+**Style Encoder** (`Services/AI/StyleEncoder.swift`)
+- Extract font style features from projects
+- Analyze geometric properties:
+  - Stroke weight and contrast
+  - x-height ratio, width ratio, slant
+  - Roundness (curves vs corners)
+  - Regularity (consistency of proportions)
+- Serif style classification (sans, oldstyle, transitional, modern, slab, script, decorative)
+- Style similarity comparison and interpolation
+- ML embedding support when models are available
+
+**Glyph Generator** (`Services/AI/GlyphGenerator.swift`)
+- Generation modes: from scratch, complete partial, variation, interpolate
+- Configurable settings: steps, guidance scale, seed, temperature
+- Placeholder generation when model not available
+- Batch generation with progress callbacks
+
+**Kerning Predictor** (`Services/AI/KerningPredictor.swift`)
+- Geometric edge analysis for kerning calculation
+- Critical pairs database (AV, AT, To, Vo, etc.)
+- Edge profile sampling and minimum gap calculation
+- Settings presets: default, tight, loose
+- ML model integration ready
+
+**WOFF Web Font Export** (`Services/Font/WebFontExporter.swift`)
+- WOFF format with zlib compression
+- Parse TTF table structure
+- Compress and reassemble as WOFF
+- WOFF2 stub (requires Brotli, not yet implemented)
+
+**Export UI Updates** (`Views/Export/ExportSheet.swift`)
+- WOFF format now enabled
+- Format-specific options display
+- Clear status indicators for unsupported formats
+
+**New Files**
+```
+Typogenesis/Services/AI/
+├── ModelManager.swift      (+320 lines)
+├── StyleEncoder.swift      (+420 lines)
+├── GlyphGenerator.swift    (+265 lines)
+└── KerningPredictor.swift  (+480 lines)
+
+Typogenesis/Services/Font/
+└── WebFontExporter.swift   (+220 lines)
+```
+
+**Test Results**: 61 tests, all passing
+
+### Phase 5 Progress
+
+Phase 5 (AI Foundation) is partially complete:
+- [x] Model loading and management
+- [x] Style encoder implementation
+- [ ] Glyph generation with diffusion (stub only)
+- [ ] Style transfer engine (stub only)
+- [x] Kerning prediction (geometric fallback)
+- [ ] Metal performance optimization
+
+### Current Export Capabilities
+
+| Format | Status | Notes |
+|--------|--------|-------|
+| TTF | Supported | Full TrueType export |
+| WOFF | Supported | zlib compressed |
+| WOFF2 | Stub | Requires Brotli |
+| OTF | Planned | CFF tables needed |
+| UFO | Planned | XML-based format |
+
+### Next Steps
+- Add unit tests for image processing services
+- Consider integrating actual Core ML models
+- Add WOFF2 support via third-party Brotli library
+- Implement UFO export format
+- Phase 6: Polish and App Store preparation
