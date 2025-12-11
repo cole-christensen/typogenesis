@@ -53,6 +53,11 @@ struct GlyphOutline: Codable, Sendable, Equatable {
         )
     }
 
+    /// Computed property for convenient access
+    var cgPath: CGPath {
+        toCGPath()
+    }
+
     func toCGPath() -> CGPath {
         let path = CGMutablePath()
 
