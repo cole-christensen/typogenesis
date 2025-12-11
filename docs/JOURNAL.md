@@ -492,3 +492,113 @@ The app now has complete UI for all major features:
 - Phase 4: Implement handwriting scanner backend (vectorization, edge detection, contour tracing)
 - Phase 5: Implement AI model integration (Core ML, diffusion models)
 - Phase 6: Polish, WOFF export, variable fonts, App Store preparation
+
+---
+
+## 2025-12-11: Phase 4 Complete - Handwriting Vectorization Backend
+
+### Summary
+Implemented the complete backend for handwriting-to-vector conversion. The handwriting scanner can now take images and convert them to vectorized glyph outlines ready for import into font projects.
+
+### Completed
+
+**Image Preprocessing** (`Services/Image/ImageProcessor.swift`)
+- Grayscale conversion for consistent processing
+- Threshold-based binarization (configurable)
+- Contrast adjustment
+- Denoise filtering using Core Image
+- Pixel data extraction to binary arrays
+- Character bounding box detection via flood fill
+- Grid cell detection for sample sheets
+- Settings presets: default, sketch, highContrast
+
+**Edge Detection** (`Services/Image/EdgeDetector.swift`)
+- Moore neighborhood contour tracing algorithm
+- 8-directional edge chain extraction
+- Douglas-Peucker path simplification
+- Corner detection based on angle threshold
+- Coordinate transformation to glyph space
+
+**Contour Tracing** (`Services/Image/ContourTracer.swift`)
+- Traces contours from binary images
+- Configurable settings: tolerance, min contour length, corner threshold
+- Converts traced contours to GlyphOutline format
+- Handles both open and closed contours
+- Calculates control handles for smooth curves
+
+**Bezier Curve Fitting** (`Services/Image/BezierFitter.swift`)
+- Schneider's algorithm for bezier curve fitting
+- Iterative parameter refinement using Newton-Raphson
+- Automatic corner detection from tangent discontinuity
+- Converts fit segments to PathPoint format
+- Configurable error threshold and max iterations
+
+**Main Vectorization Service** (`Services/Image/Vectorizer.swift`)
+- Orchestrates complete pipeline: image → binary → edges → contours → beziers → outline
+- Supports single character and full image vectorization
+- Sample sheet processing with grid detection
+- Batch processing with concurrent execution
+- Three settings presets:
+  - `cleanHandwriting`: Low tolerance, high fidelity
+  - `roughHandwriting`: Higher tolerance, more smoothing
+  - `printedCharacters`: Optimized for clean printed input
+
+**UI Integration** (`Views/Handwriting/HandwritingScanner.swift`)
+- Connected ProcessingStep to vectorization backend
+- processImage() now calls Vectorizer.vectorize()
+- DetectedCharacter includes vectorized GlyphOutline
+- Import workflow creates Glyph objects with proper metrics
+- Fixed dictionary access pattern for glyph import
+
+**New Files**
+```
+Typogenesis/Services/Image/
+├── ImageProcessor.swift    (+395 lines)
+├── EdgeDetector.swift      (+297 lines)
+├── ContourTracer.swift     (+253 lines)
+├── BezierFitter.swift      (+342 lines)
+└── Vectorizer.swift        (+339 lines)
+```
+
+**Test Results**: 61 tests, all passing
+
+### Technical Details
+
+**Vectorization Pipeline:**
+1. **Preprocessing**: Image → Grayscale → Threshold → Binary
+2. **Edge Detection**: Moore neighborhood tracing finds boundary pixels
+3. **Simplification**: Douglas-Peucker reduces point count while preserving shape
+4. **Curve Fitting**: Schneider's algorithm fits cubic bezier curves
+5. **Normalization**: Scale and position to font metrics (cap height, margins)
+
+**Key Algorithms:**
+- **Moore Neighborhood**: 8-connected boundary tracing for closed contours
+- **Douglas-Peucker**: O(n log n) path simplification preserving corners
+- **Schneider's Algorithm**: Least-squares bezier fitting with Newton-Raphson optimization
+
+### Phase 4 Complete!
+
+All Phase 4 items are now complete:
+- [x] Image preprocessing pipeline
+- [x] Edge detection service
+- [x] Contour tracing algorithm
+- [x] Bezier curve fitting (Potrace-style)
+- [x] Path simplification
+- [x] Sample sheet templates and UI
+- [x] UI connected to backend
+
+### Current Capabilities
+
+Users can now:
+1. Upload or drag-drop handwritten images
+2. Adjust processing settings (threshold, simplification)
+3. See detected characters with bounding boxes
+4. Assign characters to detected shapes
+5. Import vectorized glyphs into font project
+6. Edit imported glyphs with full bezier tools
+
+### Next Steps
+- Phase 5: Implement AI model integration (Core ML, diffusion models)
+- Phase 6: Polish, WOFF export, variable fonts, App Store preparation
+- Consider adding real-time preview of vectorization
+- Add more sample sheet templates
