@@ -1,0 +1,178 @@
+# Typogenesis Fastfile
+# Docs: https://docs.fastlane.tools
+
+default_platform(:mac)
+
+platform :mac do
+  # ==================== BUILD LANES ====================
+
+  desc "Run all tests (unit + UI)"
+  lane :test do
+    run_tests(
+      project: "Typogenesis.xcodeproj",
+      scheme: "Typogenesis",
+      destination: "platform=macOS",
+      clean: true
+    )
+  end
+
+  desc "Run unit tests only"
+  lane :unit_tests do
+    run_tests(
+      project: "Typogenesis.xcodeproj",
+      scheme: "Typogenesis",
+      destination: "platform=macOS",
+      only_testing: ["TypogenesisTests"]
+    )
+  end
+
+  desc "Run UI tests only"
+  lane :ui_tests do
+    run_tests(
+      project: "Typogenesis.xcodeproj",
+      scheme: "Typogenesis",
+      destination: "platform=macOS",
+      only_testing: ["TypogenesisUITests"]
+    )
+  end
+
+  desc "Build the app for testing"
+  lane :build do
+    build_mac_app(
+      project: "Typogenesis.xcodeproj",
+      scheme: "Typogenesis",
+      configuration: "Debug",
+      skip_archive: true,
+      skip_codesigning: true
+    )
+  end
+
+  # ==================== RELEASE LANES ====================
+
+  desc "Build for Developer ID distribution (direct download)"
+  lane :build_developer_id do
+    build_mac_app(
+      project: "Typogenesis.xcodeproj",
+      scheme: "Typogenesis",
+      configuration: "Release",
+      export_method: "developer-id",
+      output_directory: "./build"
+    )
+  end
+
+  desc "Build for Mac App Store"
+  lane :build_appstore do
+    build_mac_app(
+      project: "Typogenesis.xcodeproj",
+      scheme: "Typogenesis",
+      configuration: "Release",
+      export_method: "app-store",
+      output_directory: "./build"
+    )
+  end
+
+  desc "Build, notarize, and prepare for direct distribution"
+  lane :release_direct do
+    build_developer_id
+
+    # Notarize the app
+    notarize(
+      package: "./build/Typogenesis.app",
+      bundle_id: "com.typogenesis.app",
+      print_log: true,
+      verbose: true
+    )
+
+    # Create a zip for distribution
+    zip(
+      path: "./build/Typogenesis.app",
+      output_path: "./build/Typogenesis.zip"
+    )
+
+    UI.success("Release ready at ./build/Typogenesis.zip")
+  end
+
+  desc "Build and upload to Mac App Store"
+  lane :release_appstore do
+    build_appstore
+
+    deliver(
+      platform: "osx",
+      skip_screenshots: true,
+      skip_metadata: true,
+      submit_for_review: false
+    )
+  end
+
+  # ==================== SCREENSHOTS ====================
+
+  desc "Capture screenshots of the app"
+  lane :screenshots do
+    run_tests(
+      project: "Typogenesis.xcodeproj",
+      scheme: "Typogenesis",
+      destination: "platform=macOS",
+      only_testing: ["TypogenesisUITests/SnapshotUITests"],
+      result_bundle: true
+    )
+    # Screenshots are saved by the SnapshotHelper to fastlane/screenshots/
+    sh("cp -r ~/Library/Containers/com.typogenesis.uitests.xctrunner/Data/fastlane/screenshots/*.png ../fastlane/screenshots/ 2>/dev/null || true")
+  end
+
+  # ==================== UTILITY LANES ====================
+
+  desc "Increment build number"
+  lane :bump_build do
+    increment_build_number(
+      xcodeproj: "Typogenesis.xcodeproj"
+    )
+  end
+
+  desc "Increment version number (patch)"
+  lane :bump_version_patch do
+    increment_version_number(
+      xcodeproj: "Typogenesis.xcodeproj",
+      bump_type: "patch"
+    )
+  end
+
+  desc "Increment version number (minor)"
+  lane :bump_version_minor do
+    increment_version_number(
+      xcodeproj: "Typogenesis.xcodeproj",
+      bump_type: "minor"
+    )
+  end
+
+  desc "Clean build artifacts"
+  lane :clean do
+    clear_derived_data
+    sh("rm -rf ../build")
+    UI.success("Build artifacts cleaned")
+  end
+
+  desc "Generate xcodegen project and run tests"
+  lane :regenerate_and_test do
+    sh("cd .. && xcodegen generate")
+    test
+  end
+
+  # ==================== CI LANES ====================
+
+  desc "CI: Full test suite"
+  lane :ci do
+    clean
+    test
+  end
+
+  desc "CI: Build and test for PR"
+  lane :ci_pr do
+    run_tests(
+      project: "Typogenesis.xcodeproj",
+      scheme: "Typogenesis",
+      destination: "platform=macOS",
+      clean: true,
+      code_coverage: true
+    )
+  end
+end

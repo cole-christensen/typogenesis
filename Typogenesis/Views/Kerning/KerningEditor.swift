@@ -8,6 +8,11 @@ struct KerningEditor: View {
     @State private var kerningValue: Int = 0
     @State private var previewText: String = "AVAST Wavy Type"
     @State private var showAddSheet = false
+    @State private var showAutoKernSheet = false
+    @State private var isAutoKerning = false
+    @State private var autoKernProgress: Double = 0
+    @State private var autoKernError: String?
+    @State private var showAutoKernError = false
 
     var body: some View {
         HSplitView {
@@ -27,6 +32,13 @@ struct KerningEditor: View {
                     .font(.headline)
 
                 Spacer()
+
+                Button(action: { showAutoKernSheet = true }) {
+                    Image(systemName: "wand.and.stars")
+                }
+                .buttonStyle(.borderless)
+                .help("Auto-generate kerning pairs")
+                .disabled(appState.currentProject?.glyphs.isEmpty ?? true)
 
                 Button(action: { showAddSheet = true }) {
                     Image(systemName: "plus")
@@ -71,6 +83,20 @@ struct KerningEditor: View {
             AddKerningPairSheet { left, right, value in
                 addPair(left: left, right: right, value: value)
             }
+        }
+        .sheet(isPresented: $showAutoKernSheet) {
+            AutoKerningSheet(
+                isGenerating: $isAutoKerning,
+                progress: $autoKernProgress,
+                onGenerate: generateAutoKerning,
+                onApply: applyAutoKerning
+            )
+            .environmentObject(appState)
+        }
+        .alert("Auto-Kerning Error", isPresented: $showAutoKernError) {
+            Button("OK") {}
+        } message: {
+            Text(autoKernError ?? "Unknown error")
         }
     }
 
@@ -251,6 +277,51 @@ struct KerningEditor: View {
             selectedPairIndex = selected - 1
         }
     }
+
+    private func generateAutoKerning(
+        settings: KerningPredictor.PredictionSettings
+    ) async -> KerningPredictor.PredictionResult? {
+        guard let project = appState.currentProject else { return nil }
+
+        let predictor = KerningPredictor()
+        do {
+            let result = try await predictor.predictKerning(for: project, settings: settings)
+            return result
+        } catch {
+            await MainActor.run {
+                autoKernError = error.localizedDescription
+                showAutoKernError = true
+            }
+            return nil
+        }
+    }
+
+    private func applyAutoKerning(pairs: [KerningPair], replaceExisting: Bool) {
+        guard var project = appState.currentProject else { return }
+
+        if replaceExisting {
+            project.kerning = pairs
+        } else {
+            // Merge: update existing pairs, add new ones
+            for newPair in pairs {
+                if let existingIndex = project.kerning.firstIndex(where: { $0.left == newPair.left && $0.right == newPair.right }) {
+                    project.kerning[existingIndex] = newPair
+                } else {
+                    project.kerning.append(newPair)
+                }
+            }
+        }
+
+        // Sort by left character, then right
+        project.kerning.sort { lhs, rhs in
+            if lhs.left == rhs.left {
+                return lhs.right < rhs.right
+            }
+            return lhs.left < rhs.left
+        }
+
+        appState.currentProject = project
+    }
 }
 
 struct KerningPairRow: View {
@@ -428,6 +499,286 @@ struct AddKerningPairSheet: View {
 
     private var commonPairs: [String] {
         ["AV", "AW", "AT", "AY", "LT", "LV", "LY", "Ta", "Te", "To", "Tr", "Ty", "VA", "Vo", "WA", "Ya", "Yo"]
+    }
+}
+
+// MARK: - Auto Kerning Sheet
+
+struct AutoKerningSheet: View {
+    @EnvironmentObject var appState: AppState
+    @Environment(\.dismiss) var dismiss
+
+    @Binding var isGenerating: Bool
+    @Binding var progress: Double
+
+    let onGenerate: (KerningPredictor.PredictionSettings) async -> KerningPredictor.PredictionResult?
+    let onApply: ([KerningPair], Bool) -> Void
+
+    @State private var spacingPreset: SpacingPreset = .default
+    @State private var onlyCriticalPairs = false
+    @State private var includePunctuation = true
+    @State private var includeNumbers = true
+    @State private var minKerningValue = 2
+    @State private var replaceExisting = false
+
+    @State private var generatedResult: KerningPredictor.PredictionResult?
+    @State private var showingPreview = false
+
+    enum SpacingPreset: String, CaseIterable {
+        case tight = "Tight"
+        case `default` = "Default"
+        case loose = "Loose"
+
+        var targetSpacing: Float {
+            switch self {
+            case .tight: return 0.3
+            case .default: return 0.5
+            case .loose: return 0.7
+            }
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 20) {
+            // Header
+            HStack {
+                Image(systemName: "wand.and.stars")
+                    .font(.title2)
+                    .foregroundColor(.accentColor)
+                Text("Auto-Generate Kerning")
+                    .font(.title2)
+                    .fontWeight(.semibold)
+            }
+
+            if showingPreview, let result = generatedResult {
+                previewSection(result: result)
+            } else {
+                settingsSection
+            }
+        }
+        .padding(24)
+        .frame(width: 450)
+    }
+
+    @ViewBuilder
+    var settingsSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            // Font info
+            if let project = appState.currentProject {
+                HStack {
+                    Text("Font:")
+                    Text(project.name)
+                        .fontWeight(.medium)
+                    Spacer()
+                    Text("\(project.glyphs.count) glyphs")
+                        .foregroundColor(.secondary)
+                }
+                .padding()
+                .background(Color(nsColor: .controlBackgroundColor))
+                .cornerRadius(8)
+            }
+
+            // Spacing preset
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Spacing")
+                    .font(.headline)
+
+                Picker("Spacing", selection: $spacingPreset) {
+                    ForEach(SpacingPreset.allCases, id: \.self) { preset in
+                        Text(preset.rawValue).tag(preset)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Text(spacingDescription)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            // Options
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Options")
+                    .font(.headline)
+
+                Toggle("Only critical pairs (faster)", isOn: $onlyCriticalPairs)
+
+                Toggle("Include punctuation", isOn: $includePunctuation)
+                    .disabled(onlyCriticalPairs)
+
+                Toggle("Include numbers", isOn: $includeNumbers)
+                    .disabled(onlyCriticalPairs)
+
+                HStack {
+                    Text("Minimum kerning value:")
+                    TextField("", value: $minKerningValue, format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 60)
+                    Stepper("", value: $minKerningValue, in: 1...50)
+                        .labelsHidden()
+                }
+            }
+
+            // Existing pairs handling
+            if let project = appState.currentProject, !project.kerning.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Existing Pairs")
+                        .font(.headline)
+
+                    Picker("", selection: $replaceExisting) {
+                        Text("Merge with existing (\(project.kerning.count) pairs)").tag(false)
+                        Text("Replace all existing").tag(true)
+                    }
+                    .pickerStyle(.radioGroup)
+                }
+            }
+        }
+
+        Divider()
+
+        // Actions
+        HStack {
+            Button("Cancel") {
+                dismiss()
+            }
+            .keyboardShortcut(.cancelAction)
+
+            Spacer()
+
+            if isGenerating {
+                ProgressView()
+                    .scaleEffect(0.7)
+                    .frame(width: 20, height: 20)
+                Text("Analyzing...")
+                    .foregroundColor(.secondary)
+            } else {
+                Button("Generate") {
+                    Task {
+                        await generateKerning()
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(appState.currentProject?.glyphs.count ?? 0 < 2)
+            }
+        }
+    }
+
+    @ViewBuilder
+    func previewSection(result: KerningPredictor.PredictionResult) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            // Summary
+            HStack {
+                VStack(alignment: .leading) {
+                    Text("\(result.pairs.count) kerning pairs generated")
+                        .font(.headline)
+                    Text("Confidence: \(Int(result.confidence * 100))%")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Text("Time: \(String(format: "%.2f", result.predictionTime))s")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Spacer()
+
+                VStack(alignment: .trailing) {
+                    let negative = result.pairs.filter { $0.value < 0 }.count
+                    let positive = result.pairs.filter { $0.value > 0 }.count
+                    Text("\(negative) negative, \(positive) positive")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .padding()
+            .background(Color(nsColor: .controlBackgroundColor))
+            .cornerRadius(8)
+
+            // Preview list
+            Text("Preview")
+                .font(.headline)
+
+            ScrollView {
+                LazyVStack(spacing: 4) {
+                    ForEach(Array(result.pairs.prefix(50).enumerated()), id: \.offset) { _, pair in
+                        HStack {
+                            Text("\(String(pair.left))\(String(pair.right))")
+                                .font(.system(.body, design: .monospaced))
+                                .frame(width: 50, alignment: .leading)
+
+                            Spacer()
+
+                            Text("\(pair.value)")
+                                .foregroundColor(pair.value < 0 ? .red : (pair.value > 0 ? .green : .secondary))
+                                .font(.system(.body, design: .monospaced))
+                        }
+                        .padding(.horizontal)
+                        .padding(.vertical, 2)
+                    }
+
+                    if result.pairs.count > 50 {
+                        Text("... and \(result.pairs.count - 50) more pairs")
+                            .foregroundColor(.secondary)
+                            .padding()
+                    }
+                }
+            }
+            .frame(height: 200)
+            .background(Color(nsColor: .textBackgroundColor))
+            .cornerRadius(8)
+        }
+
+        Divider()
+
+        HStack {
+            Button("Back") {
+                showingPreview = false
+                generatedResult = nil
+            }
+
+            Spacer()
+
+            Button("Cancel") {
+                dismiss()
+            }
+
+            Button("Apply") {
+                onApply(result.pairs, replaceExisting)
+                dismiss()
+            }
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.defaultAction)
+        }
+    }
+
+    private var spacingDescription: String {
+        switch spacingPreset {
+        case .tight: return "Tighter letter spacing for display text"
+        case .default: return "Balanced spacing for body text"
+        case .loose: return "More open spacing for readability"
+        }
+    }
+
+    private func generateKerning() async {
+        isGenerating = true
+
+        let settings = KerningPredictor.PredictionSettings(
+            minKerningValue: minKerningValue,
+            targetOpticalSpacing: spacingPreset.targetSpacing,
+            includePunctuation: includePunctuation,
+            includeNumbers: includeNumbers,
+            onlyCriticalPairs: onlyCriticalPairs
+        )
+
+        if let result = await onGenerate(settings) {
+            await MainActor.run {
+                generatedResult = result
+                showingPreview = true
+            }
+        }
+
+        await MainActor.run {
+            isGenerating = false
+        }
     }
 }
 

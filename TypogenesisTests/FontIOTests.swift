@@ -240,6 +240,327 @@ struct FontExporterTests {
     }
 }
 
+@Suite("OTF Export Tests")
+struct OTFExportTests {
+
+    func createTestProject() -> FontProject {
+        var project = FontProject(
+            name: "Test Font",
+            family: "Test Font",
+            style: "Regular"
+        )
+
+        // Add some basic glyphs
+        let glyphA = createTestGlyph(character: "A", advanceWidth: 600)
+        let glyphB = createTestGlyph(character: "B", advanceWidth: 650)
+        let glyphSpace = Glyph(
+            character: " ",
+            outline: GlyphOutline(),
+            advanceWidth: 250,
+            leftSideBearing: 0
+        )
+
+        project.setGlyph(glyphA, for: "A")
+        project.setGlyph(glyphB, for: "B")
+        project.setGlyph(glyphSpace, for: " ")
+
+        return project
+    }
+
+    func createTestGlyph(character: Character, advanceWidth: Int) -> Glyph {
+        let points = [
+            PathPoint(position: CGPoint(x: 50, y: 0), type: .corner),
+            PathPoint(position: CGPoint(x: 50, y: 700), type: .corner),
+            PathPoint(position: CGPoint(x: 450, y: 700), type: .corner),
+            PathPoint(position: CGPoint(x: 450, y: 0), type: .corner)
+        ]
+        let contour = Contour(points: points, isClosed: true)
+        let outline = GlyphOutline(contours: [contour])
+
+        return Glyph(
+            character: character,
+            outline: outline,
+            advanceWidth: advanceWidth,
+            leftSideBearing: 50
+        )
+    }
+
+    @Test("OTF export creates non-empty data")
+    func otfExportCreatesData() async throws {
+        let project = createTestProject()
+        let exporter = FontExporter()
+        let options = FontExporter.ExportOptions(format: .otf)
+
+        let data = try await exporter.export(project: project, options: options)
+
+        #expect(data.count > 0)
+    }
+
+    @Test("OTF export has valid OTTO signature")
+    func otfExportHasValidSignature() async throws {
+        let project = createTestProject()
+        let exporter = FontExporter()
+        let options = FontExporter.ExportOptions(format: .otf)
+
+        let data = try await exporter.export(project: project, options: options)
+
+        // Check OTTO signature for CFF-based fonts
+        #expect(data.readUInt32(at: 0) == 0x4F54544F)  // 'OTTO'
+    }
+
+    @Test("OTF export contains CFF table")
+    func otfExportContainsCFFTable() async throws {
+        let project = createTestProject()
+        let exporter = FontExporter()
+        let options = FontExporter.ExportOptions(format: .otf)
+
+        let data = try await exporter.export(project: project, options: options)
+
+        let numTables = Int(data.readUInt16(at: 4))
+        var tables: Set<String> = []
+        for i in 0..<numTables {
+            let offset = 12 + i * 16
+            let tag = data.readTag(at: offset)
+            tables.insert(tag)
+        }
+
+        // Must have CFF table instead of glyf/loca
+        #expect(tables.contains("CFF "))
+        #expect(!tables.contains("glyf"))
+        #expect(!tables.contains("loca"))
+    }
+
+    @Test("OTF export contains required tables")
+    func otfExportContainsRequiredTables() async throws {
+        let project = createTestProject()
+        let exporter = FontExporter()
+        let options = FontExporter.ExportOptions(format: .otf)
+
+        let data = try await exporter.export(project: project, options: options)
+
+        let numTables = Int(data.readUInt16(at: 4))
+        var tables: Set<String> = []
+        for i in 0..<numTables {
+            let offset = 12 + i * 16
+            let tag = data.readTag(at: offset)
+            tables.insert(tag)
+        }
+
+        // Check required tables for CFF-based fonts
+        #expect(tables.contains("head"))
+        #expect(tables.contains("hhea"))
+        #expect(tables.contains("maxp"))
+        #expect(tables.contains("cmap"))
+        #expect(tables.contains("hmtx"))
+        #expect(tables.contains("name"))
+        #expect(tables.contains("OS/2"))
+        #expect(tables.contains("post"))
+        #expect(tables.contains("CFF "))
+    }
+
+    @Test("OTF export with kerning includes kern table")
+    func otfExportWithKerning() async throws {
+        var project = createTestProject()
+        project.kerning = [
+            KerningPair(left: "A", right: "B", value: -50)
+        ]
+
+        let exporter = FontExporter()
+        let options = FontExporter.ExportOptions(format: .otf, includeKerning: true)
+        let data = try await exporter.export(project: project, options: options)
+
+        let numTables = Int(data.readUInt16(at: 4))
+        var tables: Set<String> = []
+        for i in 0..<numTables {
+            let offset = 12 + i * 16
+            let tag = data.readTag(at: offset)
+            tables.insert(tag)
+        }
+
+        #expect(tables.contains("kern"))
+    }
+
+    @Test("OTF maxp table uses version 0.5")
+    func otfMaxpVersion() async throws {
+        let project = createTestProject()
+        let exporter = FontExporter()
+        let options = FontExporter.ExportOptions(format: .otf)
+
+        let data = try await exporter.export(project: project, options: options)
+
+        // Find maxp table
+        let numTables = Int(data.readUInt16(at: 4))
+        var maxpOffset: Int? = nil
+        for i in 0..<numTables {
+            let recordOffset = 12 + i * 16
+            let tag = data.readTag(at: recordOffset)
+            if tag == "maxp" {
+                maxpOffset = Int(data.readUInt32(at: recordOffset + 8))
+                break
+            }
+        }
+
+        guard let offset = maxpOffset else {
+            Issue.record("maxp table not found")
+            return
+        }
+
+        // CFF uses maxp version 0.5 (0x00005000)
+        let version = data.readUInt32(at: offset)
+        #expect(version == 0x00005000)
+    }
+
+    @Test("OTF CFF table has valid header")
+    func otfCFFTableHeader() async throws {
+        let project = createTestProject()
+        let exporter = FontExporter()
+        let options = FontExporter.ExportOptions(format: .otf)
+
+        let data = try await exporter.export(project: project, options: options)
+
+        // Find CFF table
+        let numTables = Int(data.readUInt16(at: 4))
+        var cffOffset: Int? = nil
+        for i in 0..<numTables {
+            let recordOffset = 12 + i * 16
+            let tag = data.readTag(at: recordOffset)
+            if tag == "CFF " {
+                cffOffset = Int(data.readUInt32(at: recordOffset + 8))
+                break
+            }
+        }
+
+        guard let offset = cffOffset else {
+            Issue.record("CFF table not found")
+            return
+        }
+
+        // CFF header: major version 1, minor version 0
+        #expect(data.readUInt8(at: offset) == 1)  // major version
+        #expect(data.readUInt8(at: offset + 1) == 0)  // minor version
+    }
+}
+
+@Suite("CFFBuilder Tests")
+struct CFFBuilderTests {
+
+    func createTestProject() -> FontProject {
+        var project = FontProject(
+            name: "Test Font",
+            family: "Test Font",
+            style: "Regular"
+        )
+
+        let glyphA = createTestGlyph(character: "A", advanceWidth: 600)
+        project.setGlyph(glyphA, for: "A")
+
+        return project
+    }
+
+    func createTestGlyph(character: Character, advanceWidth: Int) -> Glyph {
+        let points = [
+            PathPoint(position: CGPoint(x: 50, y: 0), type: .corner),
+            PathPoint(position: CGPoint(x: 50, y: 700), type: .corner),
+            PathPoint(position: CGPoint(x: 450, y: 700), type: .corner),
+            PathPoint(position: CGPoint(x: 450, y: 0), type: .corner)
+        ]
+        let contour = Contour(points: points, isClosed: true)
+        let outline = GlyphOutline(contours: [contour])
+
+        return Glyph(
+            character: character,
+            outline: outline,
+            advanceWidth: advanceWidth,
+            leftSideBearing: 50
+        )
+    }
+
+    @Test("CFFBuilder creates non-empty data")
+    func cffBuilderCreatesData() throws {
+        let project = createTestProject()
+        let glyphOrder: [(Character?, Glyph?)] = [
+            (nil, nil),  // .notdef
+            ("A", project.glyphs["A"])
+        ]
+
+        let cff = try CFFBuilder.build(project: project, glyphOrder: glyphOrder)
+
+        #expect(cff.count > 0)
+    }
+
+    @Test("CFFBuilder data starts with valid header")
+    func cffBuilderValidHeader() throws {
+        let project = createTestProject()
+        let glyphOrder: [(Character?, Glyph?)] = [
+            (nil, nil),
+            ("A", project.glyphs["A"])
+        ]
+
+        let cff = try CFFBuilder.build(project: project, glyphOrder: glyphOrder)
+
+        // CFF header
+        #expect(cff.count >= 4)
+        #expect(cff[0] == 1)  // major version
+        #expect(cff[1] == 0)  // minor version
+        #expect(cff[2] == 4)  // header size
+        #expect(cff[3] == 4)  // offSize
+    }
+
+    @Test("CFFBuilder with empty glyph order creates minimal data")
+    func cffBuilderEmptyGlyphOrder() throws {
+        let project = createTestProject()
+        let glyphOrder: [(Character?, Glyph?)] = []
+
+        let cff = try CFFBuilder.build(project: project, glyphOrder: glyphOrder)
+
+        // Should still create valid CFF structure
+        #expect(cff.count > 0)
+        #expect(cff[0] == 1)  // major version
+    }
+
+    @Test("CFFBuilder handles curved glyphs")
+    func cffBuilderCurvedGlyph() throws {
+        var project = FontProject(
+            name: "Test",
+            family: "Test",
+            style: "Regular"
+        )
+
+        // Create a glyph with bezier curves
+        let points = [
+            PathPoint(
+                position: CGPoint(x: 0, y: 0),
+                type: .smooth,
+                controlIn: nil,
+                controlOut: CGPoint(x: 0, y: 100)
+            ),
+            PathPoint(
+                position: CGPoint(x: 100, y: 100),
+                type: .smooth,
+                controlIn: CGPoint(x: 100, y: 0),
+                controlOut: nil
+            )
+        ]
+        let contour = Contour(points: points, isClosed: true)
+        let glyph = Glyph(
+            character: "o",
+            outline: GlyphOutline(contours: [contour]),
+            advanceWidth: 500,
+            leftSideBearing: 50
+        )
+        project.setGlyph(glyph, for: "o")
+
+        let glyphOrder: [(Character?, Glyph?)] = [
+            (nil, nil),
+            ("o", glyph)
+        ]
+
+        let cff = try CFFBuilder.build(project: project, glyphOrder: glyphOrder)
+
+        #expect(cff.count > 0)
+    }
+}
+
 @Suite("Font Round-Trip Tests")
 struct FontRoundTripTests {
 
@@ -489,5 +810,226 @@ struct ClampingTests {
     func uint16ClampingNormal() {
         let value = UInt16(clamping: 500)
         #expect(value == 500)
+    }
+}
+
+@Suite("Variable Font Export Integration Tests")
+struct VariableFontExportIntegrationTests {
+
+    func createVariableFontProject() -> FontProject {
+        var project = FontProject(
+            name: "VarFont Test",
+            family: "VarFont Test",
+            style: "Regular",
+            metrics: FontMetrics(
+                unitsPerEm: 1000,
+                ascender: 800,
+                descender: -200,
+                xHeight: 500,
+                capHeight: 700,
+                lineGap: 90
+            ),
+            variableConfig: .weightOnly()
+        )
+
+        // Add a simple glyph
+        let points = [
+            PathPoint(position: CGPoint(x: 50, y: 0), type: .corner),
+            PathPoint(position: CGPoint(x: 50, y: 700), type: .corner),
+            PathPoint(position: CGPoint(x: 450, y: 700), type: .corner),
+            PathPoint(position: CGPoint(x: 450, y: 0), type: .corner)
+        ]
+        let contour = Contour(points: points, isClosed: true)
+        let outline = GlyphOutline(contours: [contour])
+        let glyph = Glyph(
+            character: "A",
+            outline: outline,
+            advanceWidth: 500,
+            leftSideBearing: 50
+        )
+        project.glyphs["A"] = glyph
+
+        return project
+    }
+
+    @Test("Variable font export includes fvar table")
+    func variableFontExportIncludesFvar() async throws {
+        let project = createVariableFontProject()
+        let exporter = FontExporter()
+        let options = FontExporter.ExportOptions(format: .ttf, exportAsVariable: true)
+
+        let data = try await exporter.export(project: project, options: options)
+
+        // Find fvar table
+        let numTables = Int(data.readUInt16(at: 4))
+        var tables: Set<String> = []
+        for i in 0..<numTables {
+            let offset = 12 + i * 16
+            let tag = data.readTag(at: offset)
+            tables.insert(tag)
+        }
+
+        #expect(tables.contains("fvar"))
+    }
+
+    @Test("Variable font export includes gvar table")
+    func variableFontExportIncludesGvar() async throws {
+        let project = createVariableFontProject()
+        let exporter = FontExporter()
+        let options = FontExporter.ExportOptions(format: .ttf, exportAsVariable: true)
+
+        let data = try await exporter.export(project: project, options: options)
+
+        let numTables = Int(data.readUInt16(at: 4))
+        var tables: Set<String> = []
+        for i in 0..<numTables {
+            let offset = 12 + i * 16
+            let tag = data.readTag(at: offset)
+            tables.insert(tag)
+        }
+
+        #expect(tables.contains("gvar"))
+    }
+
+    @Test("Variable font export includes STAT table")
+    func variableFontExportIncludesStat() async throws {
+        let project = createVariableFontProject()
+        let exporter = FontExporter()
+        let options = FontExporter.ExportOptions(format: .ttf, exportAsVariable: true)
+
+        let data = try await exporter.export(project: project, options: options)
+
+        let numTables = Int(data.readUInt16(at: 4))
+        var tables: Set<String> = []
+        for i in 0..<numTables {
+            let offset = 12 + i * 16
+            let tag = data.readTag(at: offset)
+            tables.insert(tag)
+        }
+
+        #expect(tables.contains("STAT"))
+    }
+
+    @Test("Variable font export includes avar table")
+    func variableFontExportIncludesAvar() async throws {
+        let project = createVariableFontProject()
+        let exporter = FontExporter()
+        let options = FontExporter.ExportOptions(format: .ttf, exportAsVariable: true)
+
+        let data = try await exporter.export(project: project, options: options)
+
+        let numTables = Int(data.readUInt16(at: 4))
+        var tables: Set<String> = []
+        for i in 0..<numTables {
+            let offset = 12 + i * 16
+            let tag = data.readTag(at: offset)
+            tables.insert(tag)
+        }
+
+        #expect(tables.contains("avar"))
+    }
+
+    @Test("Non-variable font export excludes variable tables")
+    func nonVariableFontExportExcludesVariableTables() async throws {
+        var project = createVariableFontProject()
+        project.variableConfig = VariableFontConfig()  // Make it non-variable
+
+        let exporter = FontExporter()
+        let options = FontExporter.ExportOptions(format: .ttf, exportAsVariable: true)
+
+        let data = try await exporter.export(project: project, options: options)
+
+        let numTables = Int(data.readUInt16(at: 4))
+        var tables: Set<String> = []
+        for i in 0..<numTables {
+            let offset = 12 + i * 16
+            let tag = data.readTag(at: offset)
+            tables.insert(tag)
+        }
+
+        #expect(!tables.contains("fvar"))
+        #expect(!tables.contains("gvar"))
+        #expect(!tables.contains("STAT"))
+        #expect(!tables.contains("avar"))
+    }
+
+    @Test("Variable font export can be disabled via options")
+    func variableFontExportDisabledViaOptions() async throws {
+        let project = createVariableFontProject()
+        let exporter = FontExporter()
+        let options = FontExporter.ExportOptions(format: .ttf, exportAsVariable: false)
+
+        let data = try await exporter.export(project: project, options: options)
+
+        let numTables = Int(data.readUInt16(at: 4))
+        var tables: Set<String> = []
+        for i in 0..<numTables {
+            let offset = 12 + i * 16
+            let tag = data.readTag(at: offset)
+            tables.insert(tag)
+        }
+
+        #expect(!tables.contains("fvar"))
+    }
+
+    @Test("Variable font export fvar has correct axis count")
+    func variableFontFvarAxisCount() async throws {
+        let project = createVariableFontProject()
+        let exporter = FontExporter()
+        let options = FontExporter.ExportOptions(format: .ttf, exportAsVariable: true)
+
+        let data = try await exporter.export(project: project, options: options)
+
+        // Find fvar table
+        let numTables = Int(data.readUInt16(at: 4))
+        var fvarOffset: Int? = nil
+        for i in 0..<numTables {
+            let recordOffset = 12 + i * 16
+            let tag = data.readTag(at: recordOffset)
+            if tag == "fvar" {
+                fvarOffset = Int(data.readUInt32(at: recordOffset + 8))
+                break
+            }
+        }
+
+        guard let offset = fvarOffset else {
+            Issue.record("fvar table not found")
+            return
+        }
+
+        // Axis count is at offset + 8 in fvar header
+        let axisCount = data.readUInt16(at: offset + 8)
+        #expect(axisCount == 1)  // weightOnly has 1 axis
+    }
+
+    @Test("Variable font with weight and width axes")
+    func variableFontWeightAndWidthAxes() async throws {
+        var project = createVariableFontProject()
+        project.variableConfig = .weightAndWidth()
+
+        let exporter = FontExporter()
+        let options = FontExporter.ExportOptions(format: .ttf, exportAsVariable: true)
+
+        let data = try await exporter.export(project: project, options: options)
+
+        // Find fvar table
+        let numTables = Int(data.readUInt16(at: 4))
+        var fvarOffset: Int? = nil
+        for i in 0..<numTables {
+            let recordOffset = 12 + i * 16
+            let tag = data.readTag(at: recordOffset)
+            if tag == "fvar" {
+                fvarOffset = Int(data.readUInt32(at: recordOffset + 8))
+                break
+            }
+        }
+
+        guard let offset = fvarOffset else {
+            Issue.record("fvar table not found")
+            return
+        }
+
+        let axisCount = data.readUInt16(at: offset + 8)
+        #expect(axisCount == 2)  // weight + width
     }
 }

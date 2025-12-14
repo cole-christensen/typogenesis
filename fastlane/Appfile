@@ -1,0 +1,16 @@
+# Typogenesis Appfile
+# Docs: https://docs.fastlane.tools/advanced/#appfile
+
+# App Identifier (Bundle ID)
+app_identifier("com.typogenesis.app")
+
+# Apple Developer Portal / App Store Connect
+# Uncomment and fill in when ready for distribution:
+# apple_id("your-apple-id@example.com")
+# team_id("YOUR_TEAM_ID")
+# itc_team_id("YOUR_ITC_TEAM_ID")
+
+# For multiple targets:
+# for_platform :mac do
+#   app_identifier("com.typogenesis.app")
+# end

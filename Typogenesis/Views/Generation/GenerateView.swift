@@ -2,13 +2,18 @@ import SwiftUI
 
 struct GenerateView: View {
     @EnvironmentObject var appState: AppState
+    @StateObject private var modelManager = ModelManager.shared
     @State private var selectedMode: GenerationMode = .completeFont
-    @State private var selectedCharacterSet: CharacterSet = .basicLatin
+    @State private var selectedCharacterSet: CharacterSetOption = .basicLatin
     @State private var stylePrompt: String = ""
     @State private var referenceImage: NSImage?
+    @State private var referenceFontStyle: StyleEncoder.FontStyle?
     @State private var isGenerating = false
     @State private var progress: Double = 0
     @State private var generatedCount = 0
+    @State private var generatedGlyphs: [Character: Glyph] = [:]
+    @State private var errorMessage: String?
+    @State private var showingError = false
 
     enum GenerationMode: String, CaseIterable {
         case completeFont = "Complete Font"
@@ -17,7 +22,7 @@ struct GenerateView: View {
         case variation = "Create Variation"
     }
 
-    enum CharacterSet: String, CaseIterable {
+    enum CharacterSetOption: String, CaseIterable {
         case basicLatin = "Basic Latin (A-Z, a-z, 0-9)"
         case extendedLatin = "Extended Latin"
         case punctuation = "Punctuation & Symbols"
@@ -49,6 +54,11 @@ struct GenerateView: View {
                 .frame(minWidth: 300, maxWidth: 400)
 
             previewPanel
+        }
+        .alert("Generation Error", isPresented: $showingError) {
+            Button("OK") {}
+        } message: {
+            Text(errorMessage ?? "An unknown error occurred")
         }
     }
 
@@ -97,14 +107,14 @@ struct GenerateView: View {
                         .font(.headline)
 
                     Picker("Characters", selection: $selectedCharacterSet) {
-                        ForEach(CharacterSet.allCases, id: \.self) { charset in
+                        ForEach(CharacterSetOption.allCases, id: \.self) { charset in
                             Text(charset.rawValue).tag(charset)
                         }
                     }
                     .labelsHidden()
 
                     if selectedCharacterSet != .custom {
-                        Text("\(selectedCharacterSet.characters.count) characters")
+                        Text("\(charactersToGenerate.count) characters")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -164,6 +174,10 @@ struct GenerateView: View {
                             }
                         }
 
+                        if let style = referenceFontStyle {
+                            styleInfoView(style)
+                        }
+
                         Text("Select a font file or upload an image of the style you want to clone")
                             .font(.caption)
                             .foregroundColor(.secondary)
@@ -204,6 +218,18 @@ struct GenerateView: View {
                                 .foregroundColor(.secondary)
                         }
                     }
+
+                    if !generatedGlyphs.isEmpty && !isGenerating {
+                        Button(action: addToProject) {
+                            HStack {
+                                Image(systemName: "plus.circle")
+                                Text("Add to Project")
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
+                    }
                 }
 
                 Spacer()
@@ -214,6 +240,40 @@ struct GenerateView: View {
     }
 
     @ViewBuilder
+    func styleInfoView(_ style: StyleEncoder.FontStyle) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Extracted Style:")
+                .font(.caption)
+                .fontWeight(.medium)
+
+            HStack(spacing: 12) {
+                styleMetric("Weight", value: style.strokeWeight)
+                styleMetric("Contrast", value: style.strokeContrast)
+                styleMetric("Round", value: style.roundness)
+            }
+
+            Text("Serif: \(style.serifStyle.rawValue)")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        .padding(8)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+        .cornerRadius(4)
+    }
+
+    @ViewBuilder
+    func styleMetric(_ label: String, value: Float) -> some View {
+        VStack(spacing: 2) {
+            Text(label)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+            Text(String(format: "%.1f", value))
+                .font(.caption)
+                .fontWeight(.medium)
+        }
+    }
+
+    @ViewBuilder
     var previewPanel: some View {
         VStack(spacing: 0) {
             // Preview Header
@@ -221,15 +281,21 @@ struct GenerateView: View {
                 Text("Preview")
                     .font(.headline)
                 Spacer()
-                Text("Generated glyphs will appear here")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                if !generatedGlyphs.isEmpty {
+                    Text("\(generatedGlyphs.count) glyphs generated")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                } else {
+                    Text("Generated glyphs will appear here")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
             }
             .padding()
             .background(Color(nsColor: .controlBackgroundColor))
 
             // Preview Content
-            if isGenerating || generatedCount > 0 {
+            if isGenerating || !generatedGlyphs.isEmpty {
                 generationPreview
             } else {
                 placeholderPreview
@@ -292,25 +358,17 @@ struct GenerateView: View {
     var generationPreview: some View {
         ScrollView {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 80))], spacing: 12) {
-                ForEach(Array(selectedCharacterSet.characters.prefix(generatedCount)), id: \.self) { char in
-                    VStack(spacing: 4) {
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(Color(nsColor: .textBackgroundColor))
-                            .frame(width: 60, height: 60)
-                            .overlay {
-                                Text(String(char))
-                                    .font(.system(size: 32))
-                            }
-
-                        Text(String(char))
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                // Show generated glyphs
+                ForEach(Array(generatedGlyphs.keys.sorted()), id: \.self) { char in
+                    if let glyph = generatedGlyphs[char] {
+                        glyphPreviewCell(character: char, glyph: glyph)
                     }
                 }
 
-                // Placeholder for remaining characters
+                // Placeholder for remaining characters during generation
                 if isGenerating {
-                    ForEach(0..<(totalGlyphsToGenerate - generatedCount), id: \.self) { _ in
+                    let remaining = charactersToGenerate.filter { !generatedGlyphs.keys.contains($0) }
+                    ForEach(Array(remaining), id: \.self) { char in
                         VStack(spacing: 4) {
                             RoundedRectangle(cornerRadius: 4)
                                 .fill(Color(nsColor: .controlBackgroundColor))
@@ -320,7 +378,7 @@ struct GenerateView: View {
                                         .scaleEffect(0.5)
                                 }
 
-                            Text("...")
+                            Text(String(char))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -333,73 +391,92 @@ struct GenerateView: View {
     }
 
     @ViewBuilder
+    func glyphPreviewCell(character: Character, glyph: Glyph) -> some View {
+        VStack(spacing: 4) {
+            GlyphPreviewCanvas(glyph: glyph)
+                .frame(width: 60, height: 60)
+                .background(Color(nsColor: .textBackgroundColor))
+                .cornerRadius(4)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 4)
+                        .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
+                }
+
+            Text(String(character))
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    @ViewBuilder
     var modelStatusSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("AI Models")
                 .font(.headline)
 
             VStack(spacing: 6) {
-                modelStatusRow(name: "Glyph Diffusion", status: .notLoaded, size: "~250 MB")
-                modelStatusRow(name: "Style Encoder", status: .notLoaded, size: "~50 MB")
-                modelStatusRow(name: "Kerning Predictor", status: .notLoaded, size: "~15 MB")
+                modelStatusRow(type: .glyphDiffusion)
+                modelStatusRow(type: .styleEncoder)
+                modelStatusRow(type: .kerningNet)
             }
 
-            Button("Download Models") {
-                // Would trigger model download
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+            HStack {
+                Button("Download All") {
+                    Task {
+                        for modelType in ModelManager.ModelType.allCases {
+                            await modelManager.downloadModel(modelType)
+                        }
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(modelManager.isLoading)
 
-            Text("Models are required for AI generation. They will be downloaded and cached locally.")
+                if modelManager.allModelsReady {
+                    Label("Ready", systemImage: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundColor(.green)
+                }
+            }
+
+            Text("Models are required for AI generation. They will be downloaded and cached locally (~\(ModelManager.totalModelSize)).")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
     }
 
-    enum ModelStatus {
-        case notLoaded
-        case downloading(Double)
-        case loaded
-        case error
-    }
-
     @ViewBuilder
-    func modelStatusRow(name: String, status: ModelStatus, size: String) -> some View {
+    func modelStatusRow(type: ModelManager.ModelType) -> some View {
+        let status = modelManager.status(for: type)
+
         HStack {
             Circle()
-                .fill(statusColor(status))
+                .fill(statusColor(for: status))
                 .frame(width: 8, height: 8)
 
-            Text(name)
+            Text(type.displayName)
                 .font(.subheadline)
 
             Spacer()
 
-            Text(size)
+            Text(type.estimatedSize)
                 .font(.caption)
                 .foregroundColor(.secondary)
 
-            Text(statusText(status))
+            Text(status.displayText)
                 .font(.caption)
-                .foregroundColor(statusColor(status))
+                .foregroundColor(statusColor(for: status))
         }
     }
 
-    private func statusColor(_ status: ModelStatus) -> Color {
+    private func statusColor(for status: ModelManager.ModelStatus) -> Color {
         switch status {
-        case .notLoaded: return .gray
+        case .notDownloaded: return .gray
         case .downloading: return .orange
+        case .downloaded: return .yellow
+        case .loading: return .orange
         case .loaded: return .green
         case .error: return .red
-        }
-    }
-
-    private func statusText(_ status: ModelStatus) -> String {
-        switch status {
-        case .notLoaded: return "Not loaded"
-        case .downloading(let progress): return "\(Int(progress * 100))%"
-        case .loaded: return "Ready"
-        case .error: return "Error"
         }
     }
 
@@ -417,30 +494,71 @@ struct GenerateView: View {
     }
 
     private var canGenerate: Bool {
-        // Would check if models are loaded
-        !selectedCharacterSet.characters.isEmpty || selectedCharacterSet == .custom
+        !charactersToGenerate.isEmpty
+    }
+
+    private var charactersToGenerate: [Character] {
+        if selectedMode == .missingGlyphs, let project = appState.currentProject {
+            // Only generate characters not already in the project
+            return Array(selectedCharacterSet.characters).filter { project.glyphs[$0] == nil }
+        }
+        return Array(selectedCharacterSet.characters)
     }
 
     private var totalGlyphsToGenerate: Int {
-        selectedCharacterSet.characters.count
+        charactersToGenerate.count
     }
 
     private func startGeneration() {
         isGenerating = true
         progress = 0
         generatedCount = 0
+        generatedGlyphs = [:]
 
-        let total = totalGlyphsToGenerate
+        let characters = charactersToGenerate
+        let metrics = appState.currentProject?.metrics ?? FontMetrics()
 
-        // Simulate generation progress using async/await
         Task {
-            for i in 1...total {
-                try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds
-                generatedCount = i
-                progress = Double(i) / Double(total)
+            let generator = GlyphGenerator()
+            let style = referenceFontStyle ?? StyleEncoder.FontStyle.default
+
+            for (index, char) in characters.enumerated() {
+                do {
+                    let result = try await generator.generate(
+                        character: char,
+                        mode: .fromScratch(style: style),
+                        metrics: metrics,
+                        settings: .fast
+                    )
+
+                    await MainActor.run {
+                        generatedGlyphs[char] = result.glyph
+                        generatedCount = index + 1
+                        progress = Double(index + 1) / Double(characters.count)
+                    }
+                } catch {
+                    await MainActor.run {
+                        errorMessage = "Failed to generate '\(char)': \(error.localizedDescription)"
+                        showingError = true
+                    }
+                }
             }
-            isGenerating = false
+
+            await MainActor.run {
+                isGenerating = false
+            }
         }
+    }
+
+    private func addToProject() {
+        guard var project = appState.currentProject else { return }
+
+        for (char, glyph) in generatedGlyphs {
+            project.glyphs[char] = glyph
+        }
+
+        appState.currentProject = project
+        generatedGlyphs = [:]
     }
 
     private func selectReferenceFont() {
@@ -450,8 +568,25 @@ struct GenerateView: View {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
 
-        if panel.runModal() == .OK {
-            // Would load font and extract style
+        if panel.runModal() == .OK, let url = panel.url {
+            Task {
+                do {
+                    let parser = FontParser()
+                    let project = try await parser.parse(url: url)
+
+                    let encoder = StyleEncoder()
+                    let style = try await encoder.extractStyle(from: project)
+
+                    await MainActor.run {
+                        referenceFontStyle = style
+                    }
+                } catch {
+                    await MainActor.run {
+                        errorMessage = "Failed to analyze font: \(error.localizedDescription)"
+                        showingError = true
+                    }
+                }
+            }
         }
     }
 
@@ -464,6 +599,41 @@ struct GenerateView: View {
 
         if panel.runModal() == .OK, let url = panel.url {
             referenceImage = NSImage(contentsOf: url)
+        }
+    }
+}
+
+// MARK: - Glyph Preview Canvas
+
+struct GlyphPreviewCanvas: View {
+    let glyph: Glyph
+
+    var body: some View {
+        Canvas { context, size in
+            let bounds = glyph.outline.boundingBox
+            guard bounds.width > 0 && bounds.height > 0 else { return }
+
+            // Calculate scale and offset to center the glyph
+            let scaleX = (size.width - 8) / CGFloat(bounds.width)
+            let scaleY = (size.height - 8) / CGFloat(bounds.height)
+            let scale = min(scaleX, scaleY)
+
+            let scaledWidth = CGFloat(bounds.width) * scale
+            let scaledHeight = CGFloat(bounds.height) * scale
+            let offsetX = (size.width - scaledWidth) / 2 - CGFloat(bounds.minX) * scale
+            let offsetY = (size.height - scaledHeight) / 2 - CGFloat(bounds.minY) * scale
+
+            // Transform and draw
+            var transform = CGAffineTransform.identity
+            transform = transform.translatedBy(x: offsetX, y: size.height - offsetY)
+            transform = transform.scaledBy(x: scale, y: -scale)
+
+            let path = glyph.outline.cgPath
+            let transformedPath = path.copy(using: &transform)
+
+            if let transformedPath = transformedPath {
+                context.fill(Path(transformedPath), with: .color(.primary))
+            }
         }
     }
 }

@@ -13,11 +13,14 @@ final class AppState: ObservableObject {
     @Published var isImporting = false
     @Published var importError: String?
     @Published var showImportError = false
+    @Published var showImportSheet = false
 
     enum SidebarItem: Hashable {
         case glyphs
         case metrics
         case kerning
+        case preview
+        case variable
         case generate
         case handwriting
     }
@@ -120,6 +123,11 @@ final class AppState: ObservableObject {
     // MARK: - Font Import
 
     func importFont() {
+        showImportSheet = true
+    }
+
+    /// Legacy import (without style analysis)
+    func importFontDirect() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [
             UTType(filenameExtension: "ttf")!,

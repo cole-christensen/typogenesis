@@ -1,0 +1,91 @@
+name: Typogenesis
+options:
+  bundleIdPrefix: com.typogenesis
+  deploymentTarget:
+    macOS: "14.0"
+  xcodeVersion: "15.0"
+  generateEmptyDirectories: true
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+
+targets:
+  Typogenesis:
+    type: application
+    platform: macOS
+    sources:
+      - path: Typogenesis
+        excludes:
+          - "**/*.xcassets"
+      - path: Typogenesis/Resources
+        type: folder
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.typogenesis.app
+        INFOPLIST_GENERATION_MODE: GeneratedFile
+        PRODUCT_NAME: Typogenesis
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Typogenesis
+        INFOPLIST_KEY_LSApplicationCategoryType: "public.app-category.graphics-design"
+        INFOPLIST_KEY_NSHumanReadableCopyright: "Copyright © 2024 Typogenesis"
+        INFOPLIST_KEY_NSMainStoryboardFile: ""
+        INFOPLIST_KEY_NSPrincipalClass: NSApplication
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_HARDENED_RUNTIME: YES
+        SWIFT_STRICT_CONCURRENCY: complete
+
+  TypogenesisTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: TypogenesisTests
+    dependencies:
+      - target: Typogenesis
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.typogenesis.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Typogenesis.app/Contents/MacOS/Typogenesis"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+
+  TypogenesisUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: TypogenesisUITests
+    dependencies:
+      - target: Typogenesis
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.typogenesis.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Typogenesis
+
+schemes:
+  Typogenesis:
+    build:
+      targets:
+        Typogenesis: all
+        TypogenesisTests: [test]
+        TypogenesisUITests: [test]
+    run:
+      config: Debug
+      executable: Typogenesis
+    test:
+      config: Debug
+      gatherCoverageData: true
+      targets:
+        - TypogenesisTests
+        - TypogenesisUITests
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release

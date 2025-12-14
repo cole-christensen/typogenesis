@@ -4,11 +4,15 @@ struct MainWindow: View {
     @EnvironmentObject var appState: AppState
 
     var body: some View {
-        NavigationSplitView {
-            Sidebar()
-        } detail: {
+        Group {
             if appState.currentProject != nil {
-                ContentView()
+                NavigationSplitView {
+                    Sidebar()
+                        .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 280)
+                } detail: {
+                    ContentView()
+                }
+                .navigationSplitViewStyle(.balanced)
             } else {
                 WelcomeView()
             }
@@ -18,6 +22,9 @@ struct MainWindow: View {
             if appState.currentProject != nil {
                 ExportSheet()
             }
+        }
+        .sheet(isPresented: $appState.showImportSheet) {
+            ImportFontSheet()
         }
     }
 }
@@ -44,6 +51,12 @@ struct ContentView: View {
             MetricsEditor()
         case .kerning:
             KerningEditor()
+        case .preview:
+            if let project = appState.currentProject {
+                FontPreviewPanel(project: project)
+            }
+        case .variable:
+            VariableFontEditor()
         case .generate:
             GenerateView()
         case .handwriting:
@@ -78,6 +91,7 @@ struct WelcomeView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
+                .accessibilityIdentifier(AccessibilityID.Welcome.createNewFontButton)
 
                 Button("Import Font (.ttf/.otf)...") {
                     appState.importFont()
@@ -85,12 +99,14 @@ struct WelcomeView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.large)
                 .disabled(appState.isImporting)
+                .accessibilityIdentifier(AccessibilityID.Welcome.importFontButton)
 
                 Button("Open Existing Project...") {
                     appState.openProject()
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.large)
+                .accessibilityIdentifier(AccessibilityID.Welcome.openProjectButton)
             }
             .padding(.top)
 
@@ -101,6 +117,7 @@ struct WelcomeView: View {
                     Text("Importing font...")
                         .foregroundColor(.secondary)
                 }
+                .accessibilityIdentifier(AccessibilityID.Welcome.importingIndicator)
             }
 
             if !appState.recentProjects.isEmpty {
@@ -173,6 +190,7 @@ struct GlyphEditorContainer: View {
                             showAddGlyphSheet = true
                         }
                         .buttonStyle(.bordered)
+                        .accessibilityIdentifier(AccessibilityID.GlyphGrid.addGlyphButton)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }

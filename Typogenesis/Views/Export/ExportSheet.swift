@@ -20,17 +20,20 @@ struct ExportSheet: View {
 
         var isSupported: Bool {
             switch self {
-            case .ttf, .woff: return true
-            case .otf, .woff2, .ufo: return false
+            case .ttf, .otf, .woff, .ufo: return true
+            case .woff2: return false
             }
         }
 
         var statusText: String? {
             switch self {
-            case .ttf, .woff: return nil
+            case .ttf, .otf, .woff, .ufo: return nil
             case .woff2: return "Requires Brotli"
-            case .otf, .ufo: return "Coming soon"
             }
+        }
+
+        var isDirectory: Bool {
+            self == .ufo
         }
     }
 
@@ -100,8 +103,16 @@ struct ExportSheet: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            if selectedFormat == .ttf || selectedFormat == .woff {
+            if selectedFormat == .ttf || selectedFormat == .otf || selectedFormat == .woff || selectedFormat == .ufo {
                 Toggle("Include kerning data", isOn: $includeKerning)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier(AccessibilityID.Export.includeKerningToggle)
+            }
+
+            if selectedFormat == .ufo {
+                Text("UFO is a directory-based format used by font editors like Glyphs and RoboFont.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
@@ -112,6 +123,7 @@ struct ExportSheet: View {
                     dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
+                .accessibilityIdentifier(AccessibilityID.Export.cancelButton)
 
                 Spacer()
 
@@ -127,10 +139,12 @@ struct ExportSheet: View {
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
                 .disabled(isExporting || appState.currentProject?.glyphs.isEmpty == true)
+                .accessibilityIdentifier(AccessibilityID.Export.exportButton)
             }
         }
         .padding(24)
         .frame(width: 400)
+        .accessibilityIdentifier(AccessibilityID.Export.sheet)
         .alert("Export Error", isPresented: $showingError) {
             Button("OK") {}
         } message: {
@@ -141,15 +155,33 @@ struct ExportSheet: View {
     private func exportFont() {
         guard let project = appState.currentProject else { return }
 
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = "\(project.name).\(fileExtension)"
+        // UFO is a directory, so we need different handling
+        if selectedFormat.isDirectory {
+            let panel = NSOpenPanel()
+            panel.canChooseDirectories = true
+            panel.canChooseFiles = false
+            panel.canCreateDirectories = true
+            panel.message = "Choose a location to save the UFO package"
+            panel.prompt = "Save UFO"
 
-        if let contentType = UTType(filenameExtension: fileExtension) {
-            panel.allowedContentTypes = [contentType]
+            guard panel.runModal() == .OK, let baseURL = panel.url else { return }
+
+            let ufoURL = baseURL.appendingPathComponent("\(project.name).ufo")
+            exportUFO(project: project, to: ufoURL)
+        } else {
+            let panel = NSSavePanel()
+            panel.nameFieldStringValue = "\(project.name).\(fileExtension)"
+
+            if let contentType = UTType(filenameExtension: fileExtension) {
+                panel.allowedContentTypes = [contentType]
+            }
+
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            exportBinaryFormat(project: project, to: url)
         }
+    }
 
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-
+    private func exportBinaryFormat(project: FontProject, to url: URL) {
         isExporting = true
 
         Task {
@@ -160,9 +192,11 @@ struct ExportSheet: View {
                 switch selectedFormat {
                 case .ttf:
                     format = .ttf
+                case .otf:
+                    format = .otf
                 case .woff:
                     format = .woff
-                case .otf, .woff2, .ufo:
+                case .woff2, .ufo:
                     throw ExportError.unsupportedFormat
                 }
 
@@ -171,6 +205,31 @@ struct ExportSheet: View {
                     includeKerning: includeKerning
                 )
                 try await exporter.export(project: project, to: url, options: options)
+
+                await MainActor.run {
+                    isExporting = false
+                    dismiss()
+                }
+            } catch {
+                await MainActor.run {
+                    isExporting = false
+                    exportError = error.localizedDescription
+                    showingError = true
+                }
+            }
+        }
+    }
+
+    private func exportUFO(project: FontProject, to url: URL) {
+        isExporting = true
+
+        Task {
+            do {
+                let ufoExporter = UFOExporter()
+                let options = UFOExporter.ExportOptions(
+                    includeKerning: includeKerning
+                )
+                try await ufoExporter.export(project: project, to: url, options: options)
 
                 await MainActor.run {
                     isExporting = false

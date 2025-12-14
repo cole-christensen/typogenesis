@@ -5,32 +5,39 @@ struct Sidebar: View {
 
     var body: some View {
         List(selection: $appState.sidebarSelection) {
-            if appState.currentProject != nil {
-                Section("Font") {
-                    Label("Glyphs", systemImage: "character")
-                        .tag(AppState.SidebarItem.glyphs)
+            Section("Font") {
+                Label("Glyphs", systemImage: "character")
+                    .tag(AppState.SidebarItem.glyphs)
+                    .accessibilityIdentifier(AccessibilityID.Sidebar.glyphsItem)
 
-                    Label("Metrics", systemImage: "ruler")
-                        .tag(AppState.SidebarItem.metrics)
+                Label("Metrics", systemImage: "ruler")
+                    .tag(AppState.SidebarItem.metrics)
+                    .accessibilityIdentifier(AccessibilityID.Sidebar.metricsItem)
 
-                    Label("Kerning", systemImage: "arrow.left.and.right.text.vertical")
-                        .tag(AppState.SidebarItem.kerning)
-                }
+                Label("Kerning", systemImage: "arrow.left.and.right.text.vertical")
+                    .tag(AppState.SidebarItem.kerning)
+                    .accessibilityIdentifier(AccessibilityID.Sidebar.kerningItem)
 
-                Section("Create") {
-                    Label("AI Generate", systemImage: "wand.and.stars")
-                        .tag(AppState.SidebarItem.generate)
+                Label("Preview", systemImage: "eye")
+                    .tag(AppState.SidebarItem.preview)
+                    .accessibilityIdentifier(AccessibilityID.Sidebar.previewItem)
 
-                    Label("Handwriting", systemImage: "pencil.and.scribble")
-                        .tag(AppState.SidebarItem.handwriting)
-                }
-            } else {
-                Text("No project open")
-                    .foregroundColor(.secondary)
+                Label("Variable Font", systemImage: "slider.horizontal.below.rectangle")
+                    .tag(AppState.SidebarItem.variable)
+                    .accessibilityIdentifier(AccessibilityID.Sidebar.variableItem)
+            }
+
+            Section("Create") {
+                Label("AI Generate", systemImage: "wand.and.stars")
+                    .tag(AppState.SidebarItem.generate)
+                    .accessibilityIdentifier(AccessibilityID.Sidebar.generateItem)
+
+                Label("Handwriting", systemImage: "pencil.and.scribble")
+                    .tag(AppState.SidebarItem.handwriting)
+                    .accessibilityIdentifier(AccessibilityID.Sidebar.handwritingItem)
             }
         }
         .listStyle(.sidebar)
-        .frame(minWidth: 180)
     }
 }
 

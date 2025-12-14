@@ -20,7 +20,7 @@ actor FontExporter {
 
     enum ExportFormat {
         case ttf
-        case otf   // Not yet implemented
+        case otf
         case woff  // Web Open Font Format
         case woff2 // Web Open Font Format 2.0 (Brotli compressed)
     }
@@ -29,6 +29,7 @@ actor FontExporter {
         var format: ExportFormat = .ttf
         var includeKerning: Bool = true
         var hinting: Bool = false  // TrueType hinting not implemented
+        var exportAsVariable: Bool = true  // Export as variable font if configured
 
         static let `default` = ExportOptions()
     }
@@ -44,7 +45,7 @@ actor FontExporter {
         case .ttf:
             return try await exportTrueType(project: project, options: options)
         case .otf:
-            throw FontExporterError.exportFailed("OTF export not yet implemented")
+            return try await exportOpenType(project: project, options: options)
         case .woff:
             // First export to TTF, then convert to WOFF
             let ttfData = try await exportTrueType(project: project, options: options)
@@ -61,6 +62,207 @@ actor FontExporter {
     func export(project: FontProject, to url: URL, options: ExportOptions = .default) async throws {
         let data = try await export(project: project, options: options)
         try data.write(to: url)
+    }
+
+    // MARK: - OpenType (CFF) Export
+
+    private func exportOpenType(project: FontProject, options: ExportOptions) async throws -> Data {
+        // Build glyph order (index 0 must be .notdef)
+        var glyphOrder: [(Character?, Glyph?)] = [(nil, nil)]  // .notdef at index 0
+
+        // Add all glyphs in sorted order for consistency
+        let sortedChars = project.glyphs.keys.sorted()
+        for char in sortedChars {
+            if let glyph = project.glyphs[char] {
+                glyphOrder.append((char, glyph))
+            }
+        }
+
+        // Build character to glyph index mapping
+        var charToGlyphIndex: [Character: UInt16] = [:]
+        for (index, entry) in glyphOrder.enumerated() {
+            if let char = entry.0 {
+                charToGlyphIndex[char] = UInt16(index)
+            }
+        }
+
+        // Build CFF table
+        let cff = try CFFBuilder.build(project: project, glyphOrder: glyphOrder)
+
+        // Build other required tables
+        let head = buildHeadTableCFF(project: project, glyphOrder: glyphOrder)
+        let hhea = buildHheaTable(project: project, glyphOrder: glyphOrder)
+        let maxp = buildMaxpTableCFF(glyphOrder: glyphOrder)
+        let os2 = buildOS2Table(project: project, glyphOrder: glyphOrder)
+        let name = buildNameTable(project: project)
+        let cmap = buildCmapTable(charToGlyphIndex: charToGlyphIndex)
+        let post = buildPostTable(project: project, glyphOrder: glyphOrder)
+        let hmtx = buildHmtxTable(project: project, glyphOrder: glyphOrder)
+
+        // Optionally build kerning
+        var kern: Data? = nil
+        if options.includeKerning && !project.kerning.isEmpty {
+            kern = buildKernTable(project: project, charToGlyphIndex: charToGlyphIndex)
+        }
+
+        // Assemble font file
+        return assembleOpenTypeFontFile(
+            cff: cff,
+            head: head,
+            hhea: hhea,
+            maxp: maxp,
+            os2: os2,
+            name: name,
+            cmap: cmap,
+            post: post,
+            hmtx: hmtx,
+            kern: kern
+        )
+    }
+
+    private func buildHeadTableCFF(project: FontProject, glyphOrder: [(Character?, Glyph?)]) -> Data {
+        var data = Data()
+
+        // Calculate bounding box for all glyphs
+        var xMin: Int16 = 0
+        var yMin: Int16 = 0
+        var xMax: Int16 = 0
+        var yMax: Int16 = 0
+
+        for (_, glyph) in glyphOrder {
+            if let glyph = glyph {
+                let bbox = glyph.outline.boundingBox
+                xMin = min(xMin, Int16(clamping: bbox.minX))
+                yMin = min(yMin, Int16(clamping: bbox.minY))
+                xMax = max(xMax, Int16(clamping: bbox.maxX))
+                yMax = max(yMax, Int16(clamping: bbox.maxY))
+            }
+        }
+
+        data.writeUInt16(1)  // majorVersion
+        data.writeUInt16(0)  // minorVersion
+        data.writeFixed(Fixed(value: 0x00010000))  // fontRevision 1.0
+        data.writeUInt32(0)  // checksumAdjustment (will be calculated later)
+        data.writeUInt32(0x5F0F3CF5)  // magicNumber
+        data.writeUInt16(0x000B)  // flags
+        data.writeUInt16(UInt16(project.metrics.unitsPerEm))
+        data.writeInt64(LongDateTime().value)  // created
+        data.writeInt64(LongDateTime().value)  // modified
+        data.writeInt16(xMin)
+        data.writeInt16(yMin)
+        data.writeInt16(xMax)
+        data.writeInt16(yMax)
+        data.writeUInt16(0)  // macStyle
+        data.writeUInt16(8)  // lowestRecPPEM
+        data.writeInt16(2)   // fontDirectionHint
+        data.writeInt16(0)   // indexToLocFormat (not used for CFF)
+        data.writeInt16(0)   // glyphDataFormat
+
+        return data
+    }
+
+    private func buildMaxpTableCFF(glyphOrder: [(Character?, Glyph?)]) -> Data {
+        var data = Data()
+
+        // CFF uses maxp version 0.5
+        data.writeFixed(Fixed(value: 0x00005000))  // version 0.5 for CFF
+        data.writeUInt16(UInt16(glyphOrder.count))  // numGlyphs
+
+        return data
+    }
+
+    private func assembleOpenTypeFontFile(
+        cff: Data,
+        head: Data,
+        hhea: Data,
+        maxp: Data,
+        os2: Data,
+        name: Data,
+        cmap: Data,
+        post: Data,
+        hmtx: Data,
+        kern: Data?
+    ) -> Data {
+        // Tables for CFF-based OpenType font
+        var tables: [(tag: String, data: Data)] = [
+            ("CFF ", cff),
+            ("OS/2", os2),
+            ("cmap", cmap),
+            ("head", head),
+            ("hhea", hhea),
+            ("hmtx", hmtx),
+            ("maxp", maxp),
+            ("name", name),
+            ("post", post)
+        ]
+
+        if let kern = kern {
+            tables.append(("kern", kern))
+        }
+
+        // Sort by tag for proper ordering
+        tables.sort { $0.tag < $1.tag }
+
+        let numTables = UInt16(tables.count)
+        let searchRange = UInt16(truncatingIfNeeded: (1 << Int(log2(Double(numTables)))) * 16)
+        let entrySelector = UInt16(log2(Double(numTables)))
+        let rangeShift = numTables * 16 - searchRange
+
+        var fontData = Data()
+
+        // Offset table with 'OTTO' signature for CFF
+        fontData.writeUInt32(OffsetTable.cffVersion)  // 'OTTO'
+        fontData.writeUInt16(numTables)
+        fontData.writeUInt16(searchRange)
+        fontData.writeUInt16(entrySelector)
+        fontData.writeUInt16(rangeShift)
+
+        // Calculate table offsets
+        let tableDirectorySize = 12 + Int(numTables) * 16
+        var currentOffset = tableDirectorySize
+
+        var tableRecords: [(tag: String, checksum: UInt32, offset: UInt32, length: UInt32)] = []
+
+        for (tag, data) in tables {
+            var paddedData = data
+            paddedData.pad(to: 4)
+
+            tableRecords.append((
+                tag: tag,
+                checksum: data.calculateTableChecksum(),
+                offset: UInt32(currentOffset),
+                length: UInt32(data.count)
+            ))
+
+            currentOffset += paddedData.count
+        }
+
+        // Write table directory
+        for record in tableRecords {
+            fontData.writeTag(record.tag)
+            fontData.writeUInt32(record.checksum)
+            fontData.writeUInt32(record.offset)
+            fontData.writeUInt32(record.length)
+        }
+
+        // Write table data
+        for (_, data) in tables {
+            var paddedData = data
+            paddedData.pad(to: 4)
+            fontData.append(paddedData)
+        }
+
+        // Calculate and set checksumAdjustment in head table
+        let fileChecksum = fontData.calculateTableChecksum()
+        let checksumAdjustment = 0xB1B0AFBA &- fileChecksum
+
+        // Find head table offset and update checksumAdjustment
+        if let headRecord = tableRecords.first(where: { $0.tag == "head" }) {
+            let checksumOffset = Int(headRecord.offset) + 8
+            fontData.replaceSubrange(checksumOffset..<checksumOffset+4, with: withUnsafeBytes(of: checksumAdjustment.bigEndian) { Data($0) })
+        }
+
+        return fontData
     }
 
     // MARK: - TrueType Export
@@ -85,12 +287,17 @@ actor FontExporter {
             }
         }
 
+        // Check if this is a variable font
+        let isVariable = options.exportAsVariable && project.variableConfig.isVariableFont && !project.variableConfig.axes.isEmpty
+
         // Build all tables
         let head = buildHeadTable(project: project, glyphOrder: glyphOrder)
         let hhea = buildHheaTable(project: project, glyphOrder: glyphOrder)
         let maxp = buildMaxpTable(glyphOrder: glyphOrder)
         let os2 = buildOS2Table(project: project, glyphOrder: glyphOrder)
-        let name = buildNameTable(project: project)
+        let name = isVariable ?
+            buildNameTableWithVariableEntries(project: project, config: project.variableConfig) :
+            buildNameTable(project: project)
         let cmap = buildCmapTable(charToGlyphIndex: charToGlyphIndex)
         let post = buildPostTable(project: project, glyphOrder: glyphOrder)
         let (glyf, loca) = buildGlyfAndLocaTables(project: project, glyphOrder: glyphOrder)
@@ -100,6 +307,28 @@ actor FontExporter {
         var kern: Data? = nil
         if options.includeKerning && !project.kerning.isEmpty {
             kern = buildKernTable(project: project, charToGlyphIndex: charToGlyphIndex)
+        }
+
+        // Build variable font tables if applicable
+        var fvar: Data? = nil
+        var gvar: Data? = nil
+        var stat: Data? = nil
+        var avar: Data? = nil
+
+        if isVariable {
+            let varExporter = VariableFontExporter()
+            fvar = try await varExporter.buildFvarTable(config: project.variableConfig)
+            gvar = try await varExporter.buildGvarTable(
+                project: project,
+                glyphOrder: glyphOrder,
+                config: project.variableConfig
+            )
+            stat = try await varExporter.buildSTATTable(
+                config: project.variableConfig,
+                fontFamily: project.family,
+                fontStyle: project.style
+            )
+            avar = try await varExporter.buildAvarTable(config: project.variableConfig)
         }
 
         // Assemble font file
@@ -114,8 +343,73 @@ actor FontExporter {
             glyf: glyf,
             loca: loca,
             hmtx: hmtx,
-            kern: kern
+            kern: kern,
+            fvar: fvar,
+            gvar: gvar,
+            stat: stat,
+            avar: avar
         )
+    }
+
+    private func buildNameTableWithVariableEntries(project: FontProject, config: VariableFontConfig) -> Data {
+        var data = Data()
+        var strings: [(UInt16, String)] = []
+
+        // Standard name records
+        strings.append((0, project.metadata.copyright))
+        strings.append((1, project.family))
+        strings.append((2, project.style))
+        strings.append((3, project.metadata.uniqueID))
+        strings.append((4, "\(project.family) \(project.style)"))
+        strings.append((5, "Version \(project.metadata.version)"))
+        strings.append((6, project.family.replacingOccurrences(of: " ", with: "")))
+        strings.append((9, project.metadata.designer))
+        strings.append((10, project.metadata.description))
+        strings.append((13, project.metadata.license))
+
+        // Add axis names
+        for (index, axis) in config.axes.enumerated() {
+            strings.append((UInt16(256 + index), axis.name))
+        }
+
+        // Add instance names
+        for (index, instance) in config.instances.enumerated() {
+            strings.append((UInt16(256 + config.axes.count + index), instance.name))
+        }
+
+        // Filter out empty strings
+        strings = strings.filter { !$0.1.isEmpty }
+
+        // Build string storage
+        var stringData = Data()
+        var records: [(platformID: UInt16, encodingID: UInt16, languageID: UInt16, nameID: UInt16, offset: UInt16, length: UInt16)] = []
+
+        for (nameID, string) in strings {
+            if let utf16Data = string.data(using: .utf16BigEndian) {
+                records.append((3, 1, 0x0409, nameID, UInt16(stringData.count), UInt16(utf16Data.count)))
+                stringData.append(utf16Data)
+            }
+        }
+
+        // Write header
+        data.writeUInt16(0)  // format
+        data.writeUInt16(UInt16(records.count))
+        data.writeUInt16(UInt16(6 + records.count * 12))  // stringOffset
+
+        // Write records
+        for record in records {
+            data.writeUInt16(record.platformID)
+            data.writeUInt16(record.encodingID)
+            data.writeUInt16(record.languageID)
+            data.writeUInt16(record.nameID)
+            data.writeUInt16(record.length)
+            data.writeUInt16(record.offset)
+        }
+
+        // Append string data
+        data.append(stringData)
+
+        return data
     }
 
     // MARK: - Table Building
@@ -802,7 +1096,11 @@ actor FontExporter {
         glyf: Data,
         loca: Data,
         hmtx: Data,
-        kern: Data?
+        kern: Data?,
+        fvar: Data? = nil,
+        gvar: Data? = nil,
+        stat: Data? = nil,
+        avar: Data? = nil
     ) -> Data {
         // Tables in recommended order
         var tables: [(tag: String, data: Data)] = [
@@ -820,6 +1118,20 @@ actor FontExporter {
 
         if let kern = kern {
             tables.append(("kern", kern))
+        }
+
+        // Variable font tables
+        if let fvar = fvar {
+            tables.append(("fvar", fvar))
+        }
+        if let gvar = gvar {
+            tables.append(("gvar", gvar))
+        }
+        if let stat = stat {
+            tables.append(("STAT", stat))
+        }
+        if let avar = avar {
+            tables.append(("avar", avar))
         }
 
         // Sort by tag for proper ordering

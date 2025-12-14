@@ -2,6 +2,7 @@ import SwiftUI
 
 struct Inspector: View {
     @EnvironmentObject var appState: AppState
+    @State private var showPreview = true
 
     var body: some View {
         ScrollView {
@@ -15,6 +16,10 @@ struct Inspector: View {
                     }
 
                     metricsSection(project)
+
+                    Divider()
+
+                    quickPreviewSection(project)
                 } else {
                     Text("No project selected")
                         .foregroundColor(.secondary)
@@ -65,6 +70,58 @@ struct Inspector: View {
             LabeledContent("Descender", value: "\(project.metrics.descender)")
             LabeledContent("x-Height", value: "\(project.metrics.xHeight)")
             LabeledContent("Cap Height", value: "\(project.metrics.capHeight)")
+        }
+    }
+
+    @ViewBuilder
+    func quickPreviewSection(_ project: FontProject) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Quick Preview")
+                    .font(.headline)
+
+                Spacer()
+
+                Button(action: { showPreview.toggle() }) {
+                    Image(systemName: showPreview ? "chevron.down" : "chevron.right")
+                }
+                .buttonStyle(.borderless)
+            }
+
+            if showPreview {
+                QuickFontPreview(project: project)
+                    .frame(height: 120)
+                    .background(Color(nsColor: .textBackgroundColor))
+                    .cornerRadius(8)
+            }
+        }
+    }
+}
+
+/// Compact font preview for the Inspector sidebar
+struct QuickFontPreview: View {
+    let project: FontProject
+    @State private var sampleText = "Aa Bb Cc"
+
+    var body: some View {
+        VStack(spacing: 8) {
+            // Rendered text
+            FontTextRenderer(
+                text: sampleText,
+                project: project,
+                fontSize: 32
+            )
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.top, 8)
+
+            Spacer()
+
+            // Editable sample text
+            TextField("Sample", text: $sampleText)
+                .textFieldStyle(.roundedBorder)
+                .font(.caption)
+                .padding(.horizontal, 8)
+                .padding(.bottom, 8)
         }
     }
 }

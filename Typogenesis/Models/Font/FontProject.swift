@@ -13,6 +13,9 @@ struct FontProject: Identifiable, Codable, Sendable {
     var metadata: FontMetadata
     var settings: ProjectSettings
 
+    /// Variable font configuration (axes, masters, instances)
+    var variableConfig: VariableFontConfig
+
     var characterSet: CharacterSet {
         CharacterSet(charactersIn: String(glyphs.keys))
     }
@@ -26,7 +29,8 @@ struct FontProject: Identifiable, Codable, Sendable {
         glyphs: [Character: Glyph] = [:],
         kerning: [KerningPair] = [],
         metadata: FontMetadata = FontMetadata(),
-        settings: ProjectSettings = ProjectSettings()
+        settings: ProjectSettings = ProjectSettings(),
+        variableConfig: VariableFontConfig = VariableFontConfig()
     ) {
         self.id = id
         self.name = name
@@ -37,6 +41,7 @@ struct FontProject: Identifiable, Codable, Sendable {
         self.kerning = kerning
         self.metadata = metadata
         self.settings = settings
+        self.variableConfig = variableConfig
     }
 
     func glyph(for character: Character) -> Glyph? {
