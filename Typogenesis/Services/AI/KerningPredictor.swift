@@ -1,10 +1,53 @@
 import Foundation
-import CoreML
 import CoreGraphics
 import AppKit
+@preconcurrency import CoreML
+import CoreImage
+import os.log
 
 /// Service for predicting optimal kerning values using AI
 final class KerningPredictor {
+
+    /// Logger for tracking prediction method and fallback usage
+    private static let logger = Logger(subsystem: "com.typogenesis", category: "KerningPredictor")
+
+    // MARK: - Constants
+
+    /// Confidence scores for prediction quality
+    private enum Confidence {
+        /// High confidence when using trained ML model
+        static let withModel: Float = 0.85
+        /// Lower confidence for geometric heuristics
+        static let geometric: Float = 0.6
+    }
+
+    /// Parameters for kerning calculations
+    private enum KerningParams {
+        /// Base spacing as percentage of em (10%)
+        static let baseSpacingRatio: CGFloat = 0.1
+        /// Maximum kerning as fraction of em (1/4)
+        static let maxKerningDivisor: CGFloat = 4.0
+        /// Number of vertical samples for edge analysis
+        static let edgeSampleCount: Int = 20
+    }
+
+    /// Parameters for glyph pair rendering
+    private enum RenderParams {
+        /// Output image size in pixels
+        static let imageSize: Int = 128
+        /// Scale factor for glyph rendering
+        static let scaleFactor: CGFloat = 0.8
+        /// Baseline position as percentage of image height (70%)
+        static let baselineRatio: CGFloat = 0.7
+    }
+
+    /// Parameters for CoreML model inference
+    private enum ModelInferenceParams {
+        /// Maximum kerning value in font units (for denormalization)
+        static let maxKerningUnits: Int = 250
+        /// Batch size for efficient inference
+        static let batchSize: Int = 32
+    }
 
     enum PredictorError: Error, LocalizedError {
         case modelNotLoaded
@@ -107,6 +150,7 @@ final class KerningPredictor {
         let hasModel = await MainActor.run { ModelManager.shared.kerningNet != nil }
         if hasModel {
             // Use ML model for prediction
+            Self.logger.info("Using KerningNet model for \(pairs.count) pairs")
             for (left, right) in pairs {
                 if let kerning = try await predictPairWithModel(
                     left: left,
@@ -120,6 +164,7 @@ final class KerningPredictor {
             }
         } else {
             // Use geometric heuristics
+            Self.logger.info("Using geometric fallback for kerning prediction - AI model not loaded (\(pairs.count) pairs)")
             for (left, right) in pairs {
                 let kerning = calculateGeometricKerning(
                     left: left,
@@ -139,7 +184,7 @@ final class KerningPredictor {
         return PredictionResult(
             pairs: kerningPairs,
             predictionTime: predictionTime,
-            confidence: hasModel ? 0.85 : 0.6
+            confidence: hasModel ? Confidence.withModel : Confidence.geometric
         )
     }
 
@@ -224,6 +269,7 @@ final class KerningPredictor {
         return pairs
     }
 
+    /// Predict kerning for a single pair using the CoreML model
     private func predictPairWithModel(
         left: Character,
         right: Character,
@@ -234,24 +280,219 @@ final class KerningPredictor {
             return nil
         }
 
-        // Render pair to image (for model input when available)
-        guard renderPair(
+        // Render pair to image for model input
+        guard let pairImage = renderPair(
             leftGlyph: leftGlyph,
             rightGlyph: rightGlyph,
             metrics: project.metrics,
             spacing: 0
-        ) != nil else {
+        ) else {
             return nil
         }
 
-        // TODO: Run through model when available
-        // For now, fall back to geometric calculation
-        return calculateGeometricKerning(
-            left: left,
-            right: right,
-            project: project,
-            settings: .default
+        // Get model from ModelManager
+        let model = await MainActor.run { ModelManager.shared.kerningNet }
+        guard let kerningModel = model else {
+            // Fall back to geometric calculation
+            Self.logger.info("Using geometric fallback for '\(String(left))'-'\(String(right))' - AI model not loaded")
+            return calculateGeometricKerning(
+                left: left,
+                right: right,
+                project: project,
+                settings: .default
+            )
+        }
+
+        do {
+            // Create model input using MLDictionaryFeatureProvider (model-generated types unavailable until models compiled)
+            let pixelBuffer = try createPixelBuffer(from: pairImage)
+            let input = try MLDictionaryFeatureProvider(dictionary: [
+                "image": MLFeatureValue(pixelBuffer: pixelBuffer)
+            ])
+
+            // Run inference - model.prediction is async in Swift 6
+            let prediction = try await kerningModel.prediction(from: input)
+
+            // Extract kerning value from output
+            guard let outputFeature = prediction.featureValue(for: "kerning"),
+                  let kerningArray = outputFeature.multiArrayValue else {
+                throw PredictorError.predictionFailed("Model did not produce valid output")
+            }
+
+            // Model outputs normalized value [-1, 1], convert to font units
+            let normalizedKerning = kerningArray[0].floatValue
+            let kerningUnits = Int(normalizedKerning * Float(ModelInferenceParams.maxKerningUnits))
+
+            return kerningUnits
+        } catch {
+            Self.logger.warning("Model inference failed for '\(String(left))'-'\(String(right))': \(error.localizedDescription)")
+            // Fall back to geometric calculation
+            return calculateGeometricKerning(
+                left: left,
+                right: right,
+                project: project,
+                settings: .default
+            )
+        }
+    }
+
+    /// Predict kerning for multiple pairs in batch (more efficient)
+    func predictBatch(
+        pairs: [(Character, Character)],
+        project: FontProject,
+        settings: PredictionSettings = .default
+    ) async throws -> [KerningPair] {
+        guard project.glyphs.count >= 2 else {
+            throw PredictorError.insufficientGlyphs
+        }
+
+        let model = await MainActor.run { ModelManager.shared.kerningNet }
+
+        if let kerningModel = model {
+            // Use batch inference with model
+            return try await predictBatchWithModel(
+                pairs: pairs,
+                project: project,
+                model: kerningModel,
+                settings: settings
+            )
+        } else {
+            // Fall back to geometric calculation
+            Self.logger.info("Using geometric fallback for batch prediction - AI model not loaded")
+            return predictBatchGeometric(pairs: pairs, project: project, settings: settings)
+        }
+    }
+
+    /// Batch prediction using CoreML model
+    private func predictBatchWithModel(
+        pairs: [(Character, Character)],
+        project: FontProject,
+        model: MLModel,
+        settings: PredictionSettings
+    ) async throws -> [KerningPair] {
+        var results: [KerningPair] = []
+
+        // Process in batches for efficiency
+        for batchStart in stride(from: 0, to: pairs.count, by: ModelInferenceParams.batchSize) {
+            let batchEnd = min(batchStart + ModelInferenceParams.batchSize, pairs.count)
+            let batch = Array(pairs[batchStart..<batchEnd])
+
+            // Render all pairs in batch
+            var batchInputs: [(Character, Character, CGImage)] = []
+            for (left, right) in batch {
+                guard let leftGlyph = project.glyphs[left],
+                      let rightGlyph = project.glyphs[right],
+                      let pairImage = renderPair(
+                          leftGlyph: leftGlyph,
+                          rightGlyph: rightGlyph,
+                          metrics: project.metrics,
+                          spacing: 0
+                      ) else {
+                    continue
+                }
+                batchInputs.append((left, right, pairImage))
+            }
+
+            // Run inference on batch
+            for (left, right, pairImage) in batchInputs {
+                do {
+                    // Create model input using MLDictionaryFeatureProvider (model-generated types unavailable until models compiled)
+                    let pixelBuffer = try createPixelBuffer(from: pairImage)
+                    let input = try MLDictionaryFeatureProvider(dictionary: [
+                        "image": MLFeatureValue(pixelBuffer: pixelBuffer)
+                    ])
+
+                    // Run inference - model.prediction is async in Swift 6
+                    let prediction = try await model.prediction(from: input)
+
+                    guard let outputFeature = prediction.featureValue(for: "kerning"),
+                          let kerningArray = outputFeature.multiArrayValue else {
+                        continue
+                    }
+
+                    let normalizedKerning = kerningArray[0].floatValue
+                    let kerningUnits = Int(normalizedKerning * Float(ModelInferenceParams.maxKerningUnits))
+
+                    if abs(kerningUnits) >= settings.minKerningValue {
+                        results.append(KerningPair(left: left, right: right, value: kerningUnits))
+                    }
+                } catch {
+                    // Skip pair on error, log warning
+                    Self.logger.warning("Batch inference failed for '\(String(left))'-'\(String(right))'")
+                }
+            }
+        }
+
+        return results
+    }
+
+    /// Batch prediction using geometric heuristics (fallback)
+    private func predictBatchGeometric(
+        pairs: [(Character, Character)],
+        project: FontProject,
+        settings: PredictionSettings
+    ) -> [KerningPair] {
+        var results: [KerningPair] = []
+
+        for (left, right) in pairs {
+            let kerning = calculateGeometricKerning(
+                left: left,
+                right: right,
+                project: project,
+                settings: settings
+            )
+
+            if abs(kerning) >= settings.minKerningValue {
+                results.append(KerningPair(left: left, right: right, value: kerning))
+            }
+        }
+
+        return results
+    }
+
+    /// Create CVPixelBuffer from CGImage for model input
+    private func createPixelBuffer(from image: CGImage) throws -> CVPixelBuffer {
+        let size = RenderParams.imageSize
+
+        var pixelBuffer: CVPixelBuffer?
+        let attrs: [CFString: Any] = [
+            kCVPixelBufferCGImageCompatibilityKey: true,
+            kCVPixelBufferCGBitmapContextCompatibilityKey: true
+        ]
+
+        let status = CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            size,
+            size,
+            kCVPixelFormatType_32BGRA,
+            attrs as CFDictionary,
+            &pixelBuffer
         )
+
+        guard status == kCVReturnSuccess, let buffer = pixelBuffer else {
+            throw PredictorError.predictionFailed("Failed to create pixel buffer")
+        }
+
+        CVPixelBufferLockBaseAddress(buffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+
+        guard let context = CGContext(
+            data: CVPixelBufferGetBaseAddress(buffer),
+            width: size,
+            height: size,
+            bitsPerComponent: 8,
+            bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+        ) else {
+            throw PredictorError.predictionFailed("Failed to create graphics context")
+        }
+
+        // Draw image scaled to target size
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: 0, y: 0, width: size, height: size))
+
+        return buffer
     }
 
     private func calculateGeometricKerning(
@@ -280,7 +521,7 @@ final class KerningPredictor {
         let rightLeftEdge = analyzeLeftEdge(of: rightGlyph.outline, metrics: project.metrics)
 
         // Calculate optimal spacing adjustment
-        let baseSpacing = CGFloat(project.metrics.unitsPerEm) * 0.1  // 10% of em
+        let baseSpacing = CGFloat(project.metrics.unitsPerEm) * KerningParams.baseSpacingRatio
         let opticalSpacing = baseSpacing * CGFloat(settings.targetOpticalSpacing)
 
         // Find minimum gap between edges
@@ -296,7 +537,7 @@ final class KerningPredictor {
         let kerning = targetGap - minGap
 
         // Clamp to reasonable range
-        let maxKerning = CGFloat(project.metrics.unitsPerEm) / 4
+        let maxKerning = CGFloat(project.metrics.unitsPerEm) / KerningParams.maxKerningDivisor
         let clampedKerning = max(-maxKerning, min(maxKerning, kerning))
 
         return Int(clampedKerning.rounded())
@@ -341,57 +582,63 @@ final class KerningPredictor {
         }
     }
 
-    private func analyzeRightEdge(of outline: GlyphOutline, metrics: FontMetrics) -> EdgeProfile {
-        var positions: [(y: CGFloat, x: CGFloat)] = []
+    /// Which side of the glyph to analyze
+    private enum EdgeSide {
+        case left   // Find minimum x (leftmost points)
+        case right  // Find maximum x (rightmost points)
+    }
 
-        // Sample at various heights
-        let sampleCount = 20
+    /// Analyzes the edge profile of a glyph outline by sampling at various heights.
+    /// - Parameters:
+    ///   - outline: The glyph outline to analyze
+    ///   - side: Which edge to analyze (left finds min x, right finds max x)
+    ///   - sampleCount: Number of vertical samples to take
+    /// - Returns: Edge profile with (y, x) positions sorted by y
+    private func analyzeEdge(
+        of outline: GlyphOutline,
+        side: EdgeSide,
+        sampleCount: Int = KerningParams.edgeSampleCount
+    ) -> EdgeProfile {
+        var positions: [(y: CGFloat, x: CGFloat)] = []
         let bounds = outline.boundingBox
+
+        guard bounds.height > 0 else {
+            return EdgeProfile(positions: [])
+        }
 
         for i in 0..<sampleCount {
             let y = CGFloat(bounds.minY) + CGFloat(i) / CGFloat(sampleCount - 1) * CGFloat(bounds.height)
 
-            // Find rightmost x at this y
-            var maxX: CGFloat = CGFloat(bounds.minX)
+            // Initialize to opposite extreme based on which side we're finding
+            var extremeX: CGFloat = side == .left ? CGFloat(bounds.maxX) : CGFloat(bounds.minX)
+            let yTolerance = CGFloat(bounds.height) / CGFloat(sampleCount) * 1.5
 
             for contour in outline.contours {
                 for point in contour.points {
-                    if abs(point.position.y - y) < CGFloat(bounds.height) / CGFloat(sampleCount) * 1.5 {
-                        maxX = max(maxX, point.position.x)
+                    if abs(point.position.y - y) < yTolerance {
+                        switch side {
+                        case .left:
+                            extremeX = min(extremeX, point.position.x)
+                        case .right:
+                            extremeX = max(extremeX, point.position.x)
+                        }
                     }
                 }
             }
 
-            positions.append((y: y, x: maxX))
+            positions.append((y: y, x: extremeX))
         }
 
         return EdgeProfile(positions: positions.sorted { $0.y < $1.y })
     }
 
+    // Convenience wrappers for clarity at call sites
+    private func analyzeRightEdge(of outline: GlyphOutline, metrics: FontMetrics) -> EdgeProfile {
+        analyzeEdge(of: outline, side: .right)
+    }
+
     private func analyzeLeftEdge(of outline: GlyphOutline, metrics: FontMetrics) -> EdgeProfile {
-        var positions: [(y: CGFloat, x: CGFloat)] = []
-
-        let sampleCount = 20
-        let bounds = outline.boundingBox
-
-        for i in 0..<sampleCount {
-            let y = CGFloat(bounds.minY) + CGFloat(i) / CGFloat(sampleCount - 1) * CGFloat(bounds.height)
-
-            // Find leftmost x at this y
-            var minX: CGFloat = CGFloat(bounds.maxX)
-
-            for contour in outline.contours {
-                for point in contour.points {
-                    if abs(point.position.y - y) < CGFloat(bounds.height) / CGFloat(sampleCount) * 1.5 {
-                        minX = min(minX, point.position.x)
-                    }
-                }
-            }
-
-            positions.append((y: y, x: minX))
-        }
-
-        return EdgeProfile(positions: positions.sorted { $0.y < $1.y })
+        analyzeEdge(of: outline, side: .left)
     }
 
     private func calculateMinimumGap(
@@ -407,7 +654,7 @@ final class KerningPredictor {
         var minGap: CGFloat = .infinity
 
         // Sample at various y positions
-        let sampleCount = 20
+        let sampleCount = KerningParams.edgeSampleCount
         let leftBounds = leftGlyph.outline.boundingBox
         let rightBounds = rightGlyph.outline.boundingBox
 
@@ -438,8 +685,10 @@ final class KerningPredictor {
         metrics: FontMetrics,
         spacing: Int
     ) -> CGImage? {
-        let size = 128
-        let scale = CGFloat(size) / CGFloat(metrics.unitsPerEm) * 0.8
+        let size = RenderParams.imageSize
+        // Guard against division by zero
+        let safeUnitsPerEm = max(CGFloat(metrics.unitsPerEm), 1)
+        let scale = CGFloat(size) / safeUnitsPerEm * RenderParams.scaleFactor
 
         guard let context = CGContext(
             data: nil,
@@ -458,7 +707,7 @@ final class KerningPredictor {
         context.fill(CGRect(x: 0, y: 0, width: size, height: size))
 
         // Set up transform
-        let baseline = CGFloat(size) * 0.7
+        let baseline = CGFloat(size) * RenderParams.baselineRatio
         context.translateBy(x: 10, y: baseline)
         context.scaleBy(x: scale, y: -scale)
 
@@ -475,5 +724,29 @@ final class KerningPredictor {
         context.fillPath()
 
         return context.makeImage()
+    }
+}
+
+// MARK: - CoreML Input Helper
+
+/// Input feature provider for the KerningNet model
+private class KerningNetInput: MLFeatureProvider {
+    let image: CVPixelBuffer
+
+    var featureNames: Set<String> {
+        ["image"]
+    }
+
+    func featureValue(for featureName: String) -> MLFeatureValue? {
+        switch featureName {
+        case "image":
+            return MLFeatureValue(pixelBuffer: image)
+        default:
+            return nil
+        }
+    }
+
+    init(image: CVPixelBuffer) {
+        self.image = image
     }
 }

@@ -1,10 +1,28 @@
 import Foundation
-import CoreML
 import CoreGraphics
 import AppKit
+@preconcurrency import CoreML
+import CoreImage
+import Accelerate
+import os.log
 
 /// Service for extracting style features from fonts and glyphs
 final class StyleEncoder {
+
+    /// Logger for tracking encoding method and fallback usage
+    private static let logger = Logger(subsystem: "com.typogenesis", category: "StyleEncoder")
+
+    // MARK: - Constants
+
+    /// Parameters for style encoding
+    private enum EncodingParams {
+        /// Input image size for the model
+        static let inputImageSize: Int = 64
+        /// Embedding dimension
+        static let embeddingDimension: Int = 128
+        /// Maximum cache size for embeddings
+        static let maxCacheSize: Int = 500
+    }
 
     enum StyleEncoderError: Error, LocalizedError {
         case modelNotLoaded
@@ -70,6 +88,12 @@ final class StyleEncoder {
         "n", "o", "H", "O", "a", "g", "e", "p", "d", "b"
     ]
 
+    /// Cache for computed embeddings (key: hash of image data, value: embedding)
+    private var embeddingCache: [Int: [Float]] = [:]
+
+    /// Lock for thread-safe cache access
+    private let cacheLock = NSLock()
+
     // MARK: - Public API
 
     /// Extract style from a font project
@@ -79,10 +103,10 @@ final class StyleEncoder {
         let strokeContrast = analyzeStrokeContrast(project)
         let xHeightRatio = Float(project.metrics.xHeight) / Float(project.metrics.capHeight)
         let widthRatio = analyzeWidthRatio(project)
-        let slant = measureSlant(project)
+        let slant = analyzeSlant(project)
         let serifStyle = classifySerifStyle(project)
-        let roundness = measureRoundness(project)
-        let regularity = measureRegularity(project)
+        let roundness = analyzeRoundness(project)
+        let regularity = analyzeRegularity(project)
 
         // Get ML embedding if model is available
         var embedding: [Float] = []
@@ -219,8 +243,8 @@ final class StyleEncoder {
         return count > 0 ? min(2, totalRatio / count) / 2 : 0.5  // Normalize to 0-1
     }
 
-    private func measureSlant(_ project: FontProject) -> Float {
-        // Measure average slant angle from vertical strokes
+    private func analyzeSlant(_ project: FontProject) -> Float {
+        // Analyze average slant angle from vertical strokes
         // For now, return 0 (upright)
         // A full implementation would analyze vertical stroke angles
         return 0
@@ -246,8 +270,8 @@ final class StyleEncoder {
         return .sansSerif
     }
 
-    private func measureRoundness(_ project: FontProject) -> Float {
-        // Measure ratio of curves to corners
+    private func analyzeRoundness(_ project: FontProject) -> Float {
+        // Analyze ratio of curves to corners
         var totalCurves = 0
         var totalCorners = 0
 
@@ -269,8 +293,8 @@ final class StyleEncoder {
         return total > 0 ? Float(totalCurves) / Float(total) : 0.5
     }
 
-    private func measureRegularity(_ project: FontProject) -> Float {
-        // Measure consistency of glyph proportions
+    private func analyzeRegularity(_ project: FontProject) -> Float {
+        // Analyze consistency of glyph proportions
         // Higher regularity = more consistent width/height ratios
         var ratios: [Float] = []
 
@@ -387,13 +411,26 @@ final class StyleEncoder {
     private func encodeWithModel(_ project: FontProject) async throws -> [Float] {
         // Encode representative glyphs and average embeddings
         var embeddings: [[Float]] = []
+        var encodingFailures: [(Character, Error)] = []
 
         for char in representativeChars {
             guard let glyph = project.glyphs[char] else { continue }
             guard let image = renderGlyphForEncoding(glyph) else { continue }
 
-            if let embedding = try? await encodeImage(image) {
+            do {
+                let embedding = try await encodeImage(image)
                 embeddings.append(embedding)
+            } catch {
+                // Log failures instead of silently swallowing
+                encodingFailures.append((char, error))
+            }
+        }
+
+        // Report any encoding failures for debugging
+        if !encodingFailures.isEmpty {
+            print("[StyleEncoder] WARNING: Failed to encode \(encodingFailures.count) glyphs:")
+            for (char, error) in encodingFailures {
+                print("  - '\(char)': \(error.localizedDescription)")
             }
         }
 
@@ -405,21 +442,261 @@ final class StyleEncoder {
         return averageEmbeddings(embeddings)
     }
 
+    /// Encode image to style embedding using CoreML model
+    /// Falls back to statistical embedding if model unavailable
     private func encodeImage(_ image: CGImage) async throws -> [Float] {
-        // TODO: Implement actual model inference when models are available
-        // For now, return a placeholder embedding
-
-        // Placeholder: generate deterministic "embedding" based on image statistics
-        guard let data = image.dataProvider?.data as Data? else {
-            return Array(repeating: 0, count: 128)
+        // Check cache first
+        let cacheKey = computeImageHash(image)
+        if let cached = getCachedEmbedding(for: cacheKey) {
+            return cached
         }
 
-        var embedding = [Float](repeating: 0, count: 128)
-        for (i, byte) in data.prefix(128).enumerated() {
-            embedding[i] = Float(byte) / 255.0
+        // Get model from ModelManager
+        let model = await MainActor.run { ModelManager.shared.styleEncoder }
+
+        let embedding: [Float]
+        if let styleModel = model {
+            // Use CoreML model for encoding
+            Self.logger.debug("Using CoreML StyleEncoder model for embedding")
+            embedding = try await encodeWithCoreML(image: image, model: styleModel)
+        } else {
+            // Fall back to statistical embedding
+            Self.logger.info("Using statistical fallback for style encoding - AI model not loaded")
+            embedding = computeStatisticalEmbedding(image)
+        }
+
+        // Cache the result
+        cacheEmbedding(embedding, for: cacheKey)
+
+        return embedding
+    }
+
+    /// Encode image using CoreML StyleEncoder model
+    private func encodeWithCoreML(image: CGImage, model: MLModel) async throws -> [Float] {
+        // Convert CGImage to CVPixelBuffer
+        let pixelBuffer = try createPixelBuffer(from: image, size: EncodingParams.inputImageSize)
+
+        // Create model input using MLDictionaryFeatureProvider (model-generated types unavailable until models compiled)
+        let inputFeatures = try MLDictionaryFeatureProvider(dictionary: [
+            "image": MLFeatureValue(pixelBuffer: pixelBuffer)
+        ])
+
+        // Run inference - model.prediction is async in Swift 6
+        let prediction = try await model.prediction(from: inputFeatures)
+
+        // Extract embedding from output
+        guard let embeddingFeature = prediction.featureValue(for: "embedding"),
+              let embeddingArray = embeddingFeature.multiArrayValue else {
+            throw StyleEncoderError.encodingFailed("Model did not produce valid embedding output")
+        }
+
+        // Convert MLMultiArray to [Float]
+        var embedding = [Float](repeating: 0, count: EncodingParams.embeddingDimension)
+        for i in 0..<min(embeddingArray.count, EncodingParams.embeddingDimension) {
+            embedding[i] = embeddingArray[i].floatValue
         }
 
         return embedding
+    }
+
+    /// Create CVPixelBuffer from CGImage for model input
+    private func createPixelBuffer(from image: CGImage, size: Int) throws -> CVPixelBuffer {
+        // Create pixel buffer with correct format
+        var pixelBuffer: CVPixelBuffer?
+        let attrs: [CFString: Any] = [
+            kCVPixelBufferCGImageCompatibilityKey: true,
+            kCVPixelBufferCGBitmapContextCompatibilityKey: true
+        ]
+
+        let status = CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            size,
+            size,
+            kCVPixelFormatType_32BGRA,
+            attrs as CFDictionary,
+            &pixelBuffer
+        )
+
+        guard status == kCVReturnSuccess, let buffer = pixelBuffer else {
+            throw StyleEncoderError.invalidInput
+        }
+
+        CVPixelBufferLockBaseAddress(buffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+
+        guard let context = CGContext(
+            data: CVPixelBufferGetBaseAddress(buffer),
+            width: size,
+            height: size,
+            bitsPerComponent: 8,
+            bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+        ) else {
+            throw StyleEncoderError.invalidInput
+        }
+
+        // Draw image scaled to target size
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: 0, y: 0, width: size, height: size))
+
+        return buffer
+    }
+
+    /// Compute statistical embedding as fallback (no ML model)
+    /// Uses image statistics to create a deterministic embedding
+    private func computeStatisticalEmbedding(_ image: CGImage) -> [Float] {
+        var embedding = [Float](repeating: 0, count: EncodingParams.embeddingDimension)
+
+        // Get pixel data
+        guard let dataProvider = image.dataProvider,
+              let data = dataProvider.data as Data? else {
+            return embedding
+        }
+
+        let pixels = [UInt8](data)
+        let width = image.width
+        let height = image.height
+        let bytesPerPixel = image.bitsPerPixel / 8
+
+        guard pixels.count >= width * height * bytesPerPixel else {
+            return embedding
+        }
+
+        // Compute statistical features
+        var sum: Float = 0
+        var sumSquares: Float = 0
+        var pixelCount: Float = 0
+
+        // Compute mean and variance (grayscale equivalent)
+        for y in 0..<height {
+            for x in 0..<width {
+                let offset = (y * width + x) * bytesPerPixel
+                // Convert to grayscale using luminance weights
+                let r = Float(pixels[offset])
+                let g = Float(pixels[offset + 1])
+                let b = Float(pixels[offset + 2])
+                let gray = 0.299 * r + 0.587 * g + 0.114 * b
+
+                sum += gray
+                sumSquares += gray * gray
+                pixelCount += 1
+            }
+        }
+
+        let mean = sum / max(pixelCount, 1)
+        let variance = (sumSquares / max(pixelCount, 1)) - (mean * mean)
+        let stdDev = sqrt(max(variance, 0))
+
+        // Compute horizontal and vertical stroke density
+        var horizontalDensity: [Float] = []
+        var verticalDensity: [Float] = []
+
+        // Sample rows for horizontal density
+        for y in stride(from: 0, to: height, by: max(height / 16, 1)) {
+            var rowSum: Float = 0
+            for x in 0..<width {
+                let offset = (y * width + x) * bytesPerPixel
+                let gray = (Float(pixels[offset]) + Float(pixels[offset + 1]) + Float(pixels[offset + 2])) / 3.0
+                rowSum += (255 - gray) / 255.0
+            }
+            horizontalDensity.append(rowSum / Float(width))
+        }
+
+        // Sample columns for vertical density
+        for x in stride(from: 0, to: width, by: max(width / 16, 1)) {
+            var colSum: Float = 0
+            for y in 0..<height {
+                let offset = (y * width + x) * bytesPerPixel
+                let gray = (Float(pixels[offset]) + Float(pixels[offset + 1]) + Float(pixels[offset + 2])) / 3.0
+                colSum += (255 - gray) / 255.0
+            }
+            verticalDensity.append(colSum / Float(height))
+        }
+
+        // Fill embedding vector with statistical features
+        var idx = 0
+
+        // Global statistics (0-3)
+        embedding[idx] = mean / 255.0; idx += 1
+        embedding[idx] = stdDev / 128.0; idx += 1
+        embedding[idx] = variance / 10000.0; idx += 1
+        embedding[idx] = Float(pixelCount) / Float(width * height); idx += 1
+
+        // Horizontal density profile (4-19)
+        for i in 0..<min(16, horizontalDensity.count) {
+            embedding[idx] = horizontalDensity[i]; idx += 1
+        }
+        idx = 20
+
+        // Vertical density profile (20-35)
+        for i in 0..<min(16, verticalDensity.count) {
+            embedding[idx] = verticalDensity[i]; idx += 1
+        }
+        idx = 36
+
+        // Fill remaining with derived features
+        // Edge density estimation
+        for i in 36..<128 {
+            let sampleX = (i - 36) % width
+            let sampleY = ((i - 36) / width) % height
+            let offset = (sampleY * width + sampleX) * bytesPerPixel
+            if offset + 2 < pixels.count {
+                embedding[i] = Float(pixels[offset]) / 255.0
+            }
+        }
+
+        return embedding
+    }
+
+    /// Compute hash of image for caching
+    private func computeImageHash(_ image: CGImage) -> Int {
+        var hasher = Hasher()
+        hasher.combine(image.width)
+        hasher.combine(image.height)
+
+        // Sample some pixels for hash
+        if let dataProvider = image.dataProvider,
+           let data = dataProvider.data as Data? {
+            let bytes = [UInt8](data)
+            // Sample every 1000th byte
+            for i in stride(from: 0, to: min(bytes.count, 10000), by: 1000) {
+                hasher.combine(bytes[i])
+            }
+        }
+
+        return hasher.finalize()
+    }
+
+    /// Get cached embedding if available
+    private func getCachedEmbedding(for key: Int) -> [Float]? {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        return embeddingCache[key]
+    }
+
+    /// Cache embedding with size limit enforcement
+    private func cacheEmbedding(_ embedding: [Float], for key: Int) {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+
+        // Enforce cache size limit
+        if embeddingCache.count >= EncodingParams.maxCacheSize {
+            // Remove oldest entries (simple eviction: remove first half)
+            let keysToRemove = Array(embeddingCache.keys.prefix(EncodingParams.maxCacheSize / 2))
+            for k in keysToRemove {
+                embeddingCache.removeValue(forKey: k)
+            }
+        }
+
+        embeddingCache[key] = embedding
+    }
+
+    /// Clear the embedding cache
+    func clearCache() {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        embeddingCache.removeAll()
     }
 
     private func averageEmbeddings(_ embeddings: [[Float]]) -> [Float] {
@@ -464,5 +741,29 @@ final class StyleEncoder {
 
     private func lerp(_ a: Float, _ b: Float, _ t: Float) -> Float {
         a + (b - a) * t
+    }
+}
+
+// MARK: - CoreML Input Helper
+
+/// Input feature provider for the StyleEncoder model
+private class StyleEncoderInput: MLFeatureProvider {
+    let image: CVPixelBuffer
+
+    var featureNames: Set<String> {
+        ["image"]
+    }
+
+    func featureValue(for featureName: String) -> MLFeatureValue? {
+        switch featureName {
+        case "image":
+            return MLFeatureValue(pixelBuffer: image)
+        default:
+            return nil
+        }
+    }
+
+    init(image: CVPixelBuffer) {
+        self.image = image
     }
 }

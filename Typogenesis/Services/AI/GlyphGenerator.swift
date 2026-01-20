@@ -1,8 +1,32 @@
 import Foundation
-import CoreML
 import CoreGraphics
+@preconcurrency import CoreML
+import CoreImage
+import AppKit
+import os.log
 
-/// Service for generating new glyphs using AI
+/// Service for generating glyphs using template-based algorithmic generation.
+///
+/// **HONEST STATUS:** This service uses parametric stroke templates to generate
+/// recognizable letterforms. There is NO AI/ML involved - the code path for
+/// diffusion-based generation exists but requires trained models that don't exist.
+///
+/// ## What Works Now (Template Generation)
+/// - A-Z, a-z, 0-9, and common punctuation have stroke-based templates
+/// - Style parameters (weight, contrast, roundness, slant) affect output
+/// - Proper uppercase/lowercase height differentiation
+/// - Serif style variations (slab, bracketed, hairline)
+///
+/// ## What Would Be Needed for Real AI
+/// See `runDiffusion()` for detailed requirements. Summary:
+/// - 10,000+ font training dataset
+/// - Diffusion model architecture design
+/// - 2-4 weeks GPU training time
+/// - CoreML conversion and optimization
+///
+/// ## Confidence Values
+/// - 0.0: Template/algorithmic generation (honest - this is what we do)
+/// - 0.9: Would be used for real AI generation (unreachable currently)
 final class GlyphGenerator {
 
     enum GeneratorError: Error, LocalizedError {
@@ -63,9 +87,88 @@ final class GlyphGenerator {
         let generationTime: TimeInterval
     }
 
+    // MARK: - Constants
+
+    /// Typographic spacing ratios (as percentage of unitsPerEm)
+    private enum SpacingRatio {
+        /// Left sidebearing - space before the glyph (10% of em)
+        static let leftSideBearing: CGFloat = 0.1
+        /// Right sidebearing - space after the glyph (20% of em)
+        static let rightSideBearing: CGFloat = 0.2
+        /// Minimum advance width as fraction of em (50%)
+        static let minAdvanceWidth: CGFloat = 0.5
+    }
+
+    /// Confidence scores for generation quality assessment
+    private enum ConfidenceScore {
+        /// High confidence when using real trained AI model
+        static let aiModel: Float = 0.9
+        /// Zero confidence for template/placeholder generation (honest)
+        static let placeholder: Float = 0.0
+    }
+
+    /// Geometric placeholder parameters
+    private enum PlaceholderParams {
+        /// Height for punctuation/symbols as fraction of em
+        static let punctuationHeight: CGFloat = 0.5
+        /// Margin inside placeholder rectangle as fraction of em
+        static let margin: CGFloat = 0.05
+        /// Stroke width for hollow rectangle as fraction of em
+        static let strokeWidth: CGFloat = 0.04
+        /// Variation scaling factor for glyph variations
+        static let variationScale: Double = 0.1
+    }
+
     // MARK: - Private Properties
 
     private let styleEncoder = StyleEncoder()
+    private let templateLibrary = GlyphTemplateLibrary.shared
+    private let strokeBuilder = StrokeBuilder()
+
+    /// Cache for model-generated images to avoid redundant processing
+    private var generationCache: [String: GlyphOutline] = [:]
+
+    /// Logger for tracking generation method and fallback usage
+    private static let logger = Logger(subsystem: "com.typogenesis", category: "GlyphGenerator")
+
+    /// Track statistics about generation method usage
+    private(set) var generationStats = GenerationStats()
+
+    /// Statistics about generation method usage
+    struct GenerationStats {
+        var aiGenerations: Int = 0
+        var templateGenerations: Int = 0
+        var fallbackGenerations: Int = 0
+        var failedGenerations: Int = 0
+
+        var totalGenerations: Int {
+            aiGenerations + templateGenerations + fallbackGenerations
+        }
+
+        var aiUsagePercentage: Double {
+            guard totalGenerations > 0 else { return 0 }
+            return Double(aiGenerations) / Double(totalGenerations) * 100
+        }
+
+        mutating func reset() {
+            aiGenerations = 0
+            templateGenerations = 0
+            fallbackGenerations = 0
+            failedGenerations = 0
+        }
+    }
+
+    // MARK: - Model Inference Constants
+
+    /// Parameters for model-based generation
+    private enum ModelParams {
+        /// Size of the output image from the diffusion model
+        static let outputImageSize: Int = 256
+        /// Threshold for binarizing model output (0-255 scale)
+        static let binaryThreshold: UInt8 = 128
+        /// Minimum contour length in pixels
+        static let minContourLength: Int = 10
+    }
 
     // MARK: - Public API
 
@@ -85,6 +188,10 @@ final class GlyphGenerator {
         // Check model availability on MainActor
         let hasModel = await MainActor.run { Self.isModelAvailable() }
         guard hasModel else {
+            // Log fallback usage
+            Self.logger.info("Using template fallback for '\(String(character))' - AI model not loaded")
+            generationStats.fallbackGenerations += 1
+
             // Return placeholder when model not available
             return try await generatePlaceholder(
                 character: character,
@@ -113,15 +220,15 @@ final class GlyphGenerator {
         let glyph = Glyph(
             character: character,
             outline: outline,
-            advanceWidth: bounds.width + Int(CGFloat(metrics.unitsPerEm) * 0.2),
-            leftSideBearing: Int(CGFloat(metrics.unitsPerEm) * 0.1)
+            advanceWidth: bounds.width + Int(CGFloat(metrics.unitsPerEm) * SpacingRatio.rightSideBearing),
+            leftSideBearing: Int(CGFloat(metrics.unitsPerEm) * SpacingRatio.leftSideBearing)
         )
 
         let generationTime = Date().timeIntervalSince(startTime)
 
         return GenerationResult(
             glyph: glyph,
-            confidence: 0.85,  // Placeholder confidence
+            confidence: ConfidenceScore.aiModel,
             generationTime: generationTime
         )
     }
@@ -155,6 +262,259 @@ final class GlyphGenerator {
     var isAvailable: Bool {
         // Either real model or placeholder
         true
+    }
+
+    // MARK: - Model-Based Generation
+
+    /// Generate a glyph using the CoreML diffusion model
+    /// Falls back to template generation if model is unavailable or fails
+    func generateWithModel(
+        character: Character,
+        style: StyleEncoder.FontStyle,
+        metrics: FontMetrics,
+        settings: GenerationSettings = .default
+    ) async throws -> GenerationResult {
+        let startTime = Date()
+
+        // Check model availability on MainActor
+        let model = await MainActor.run { ModelManager.shared.glyphDiffusion }
+        guard let diffusionModel = model else {
+            // Fall back to template generation
+            return try await generatePlaceholder(
+                character: character,
+                mode: .fromScratch(style: style),
+                metrics: metrics
+            )
+        }
+
+        do {
+            // Prepare model input
+            let inputFeatures = try prepareModelInput(
+                character: character,
+                style: style,
+                seed: settings.seed
+            )
+
+            // Run inference
+            let output = try await runModelInference(
+                model: diffusionModel,
+                input: inputFeatures,
+                steps: settings.steps,
+                guidanceScale: settings.guidanceScale
+            )
+
+            // Post-process: convert model output to glyph outline
+            let outline = try postProcessModelOutput(
+                output: output,
+                metrics: metrics
+            )
+
+            // Create glyph with proper metrics
+            let bounds = outline.boundingBox
+            let glyph = Glyph(
+                character: character,
+                outline: outline,
+                advanceWidth: bounds.width + Int(CGFloat(metrics.unitsPerEm) * SpacingRatio.rightSideBearing),
+                leftSideBearing: Int(CGFloat(metrics.unitsPerEm) * SpacingRatio.leftSideBearing),
+                generatedBy: .aiGenerated,
+                styleConfidence: ConfidenceScore.aiModel
+            )
+
+            let generationTime = Date().timeIntervalSince(startTime)
+
+            return GenerationResult(
+                glyph: glyph,
+                confidence: ConfidenceScore.aiModel,
+                generationTime: generationTime
+            )
+        } catch {
+            // Model inference failed - fall back to template generation
+            print("[GlyphGenerator] Model inference failed: \(error.localizedDescription), falling back to template")
+            return try await generatePlaceholder(
+                character: character,
+                mode: .fromScratch(style: style),
+                metrics: metrics
+            )
+        }
+    }
+
+    // MARK: - Model Input Preparation
+
+    /// Prepare input features for the diffusion model
+    private func prepareModelInput(
+        character: Character,
+        style: StyleEncoder.FontStyle,
+        seed: UInt64?
+    ) throws -> MLFeatureProvider {
+        // Create character embedding (one-hot or learned)
+        let charEmbedding = createCharacterEmbedding(character)
+
+        // Use style embedding or default
+        let styleEmbedding = style.embedding.isEmpty ?
+            createDefaultStyleEmbedding() : style.embedding
+
+        // Create random seed for generation
+        let actualSeed = seed ?? UInt64.random(in: 0..<UInt64.max)
+
+        // Create MLMultiArray for embeddings
+        let charArray = try MLMultiArray(shape: [128], dataType: .float32)
+        for (i, value) in charEmbedding.enumerated() {
+            charArray[i] = NSNumber(value: value)
+        }
+
+        let styleArray = try MLMultiArray(shape: [128], dataType: .float32)
+        for (i, value) in styleEmbedding.enumerated() {
+            styleArray[i] = NSNumber(value: value)
+        }
+
+        let seedArray = try MLMultiArray(shape: [1], dataType: .float32)
+        seedArray[0] = NSNumber(value: Float(actualSeed % 10000) / 10000.0)
+
+        // Use MLDictionaryFeatureProvider since actual model types aren't available until models are compiled
+        return try MLDictionaryFeatureProvider(dictionary: [
+            "characterEmbedding": MLFeatureValue(multiArray: charArray),
+            "styleEmbedding": MLFeatureValue(multiArray: styleArray),
+            "seed": MLFeatureValue(multiArray: seedArray)
+        ])
+    }
+
+    /// Run diffusion model inference
+    private func runModelInference(
+        model: MLModel,
+        input: MLFeatureProvider,
+        steps: Int,
+        guidanceScale: Float
+    ) async throws -> CGImage {
+        // Run prediction - model.prediction is async in Swift 6
+        let prediction = try await model.prediction(from: input)
+
+        // Extract output image from prediction
+        guard let outputFeature = prediction.featureValue(for: "outputImage"),
+              let pixelBuffer = outputFeature.imageBufferValue else {
+            throw GeneratorError.generationFailed("Model did not produce valid image output")
+        }
+
+        // Convert CVPixelBuffer to CGImage
+        let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+        let context = CIContext()
+        guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else {
+            throw GeneratorError.generationFailed("Failed to convert model output to image")
+        }
+
+        return cgImage
+    }
+
+    // MARK: - Post-Processing Pipeline
+
+    /// Convert model output image to GlyphOutline
+    /// Pipeline: grayscale → threshold → contour trace → bezier fit
+    private func postProcessModelOutput(
+        output: CGImage,
+        metrics: FontMetrics
+    ) throws -> GlyphOutline {
+        // Step 1: Convert to grayscale pixel data
+        let pixelData = try ImageProcessor.getPixelData(output)
+
+        // Step 2: Apply threshold to create binary image
+        let binaryData = pixelData.toBinary(threshold: ModelParams.binaryThreshold)
+
+        // Step 3: Trace contours using existing ContourTracer
+        let tracingSettings = ContourTracer.TracingSettings(
+            simplificationTolerance: 2.0,
+            minContourLength: ModelParams.minContourLength,
+            detectCorners: true,
+            cornerAngleThreshold: 60,
+            smoothCurves: true
+        )
+
+        let tracedContours = try ContourTracer.trace(
+            binary: binaryData,
+            width: pixelData.width,
+            height: pixelData.height,
+            settings: tracingSettings
+        )
+
+        guard !tracedContours.isEmpty else {
+            throw GeneratorError.generationFailed("No contours detected in model output")
+        }
+
+        // Step 4: Fit bezier curves to traced contours
+        let outline = fitBeziersToModelOutput(
+            contours: tracedContours,
+            imageSize: CGSize(width: pixelData.width, height: pixelData.height),
+            metrics: metrics
+        )
+
+        return outline
+    }
+
+    /// Fit bezier curves to model output contours and scale to font metrics
+    private func fitBeziersToModelOutput(
+        contours: [ContourTracer.TracedContour],
+        imageSize: CGSize,
+        metrics: FontMetrics
+    ) -> GlyphOutline {
+        var glyphContours: [Contour] = []
+
+        // Collect all points to find bounds for normalization
+        var allPoints: [CGPoint] = []
+        for contour in contours {
+            allPoints.append(contentsOf: contour.points)
+        }
+
+        guard !allPoints.isEmpty else {
+            return GlyphOutline()
+        }
+
+        // Find bounding box
+        let minX = allPoints.map { $0.x }.min()!
+        let maxX = allPoints.map { $0.x }.max()!
+        let minY = allPoints.map { $0.y }.min()!
+        let maxY = allPoints.map { $0.y }.max()!
+
+        let width = maxX - minX
+        let height = maxY - minY
+
+        guard width > 0, height > 0 else {
+            return GlyphOutline()
+        }
+
+        // Calculate scale to fit cap height
+        let targetHeight = CGFloat(metrics.capHeight)
+        let scale = targetHeight / height
+        let margin = CGFloat(metrics.unitsPerEm) * 0.1
+
+        for tracedContour in contours {
+            // Transform points to glyph coordinates
+            let transformedPoints = tracedContour.points.map { point in
+                CGPoint(
+                    x: (point.x - minX) * scale + margin,
+                    y: (maxY - point.y) * scale // Flip Y
+                )
+            }
+
+            // Fit bezier curves
+            let bezierSettings = BezierFitter.FittingSettings(
+                errorThreshold: 4.0,
+                maxIterations: 4,
+                cornerThreshold: 60
+            )
+
+            let segments = BezierFitter.fitCurves(
+                to: transformedPoints,
+                isClosed: tracedContour.isClosed,
+                settings: bezierSettings
+            )
+
+            // Convert to PathPoints
+            let pathPoints = BezierFitter.toPathPoints(segments: segments)
+
+            if !pathPoints.isEmpty {
+                glyphContours.append(Contour(points: pathPoints, isClosed: tracedContour.isClosed))
+            }
+        }
+
+        return GlyphOutline(contours: glyphContours)
     }
 
     // MARK: - Private Methods
@@ -210,19 +570,56 @@ final class GlyphGenerator {
         conditioning: Conditioning,
         settings: GenerationSettings
     ) async throws -> GlyphOutline {
-        // TODO: Implement actual diffusion when model is available
-        // For now, return placeholder outline
+        // ============================================================================
+        // REAL AI IMPLEMENTATION REQUIREMENTS
+        // ============================================================================
+        //
+        // To implement actual diffusion-based glyph generation, you need:
+        //
+        // 1. TRAINING DATA (~6 months of work)
+        //    - 10,000+ fonts with consistent glyph labeling
+        //    - Normalized outlines (all scaled to same units-per-em)
+        //    - Style annotations (weight, contrast, serif style, x-height ratio, etc.)
+        //    - Character class labels
+        //
+        // 2. MODEL ARCHITECTURE
+        //    - Diffusion model conditioned on character class and style embedding
+        //    - Input: noise + conditioning (character one-hot + style vector)
+        //    - Output: sequence of control points forming glyph outline
+        //    - Recommended: DDPM or flow-matching for cleaner outlines
+        //
+        // 3. TRAINING INFRASTRUCTURE
+        //    - GPU cluster (8+ A100s for reasonable training time)
+        //    - 2-4 weeks of training
+        //    - PyTorch + custom training loop
+        //
+        // 4. COREML CONVERSION
+        //    - Export trained model to ONNX
+        //    - Convert ONNX → CoreML using coremltools
+        //    - Optimize for Apple Neural Engine
+        //
+        // 5. INFERENCE PIPELINE (what this function would do)
+        //    - Load CoreML model via ModelManager
+        //    - Prepare input tensor from conditioning
+        //    - Run denoising loop (settings.steps iterations)
+        //    - Decode output points to GlyphOutline
+        //
+        // This is a multi-month ML research project requiring:
+        //    - ML engineering expertise
+        //    - Access to font datasets (Google Fonts, Adobe Fonts)
+        //    - Significant compute resources
+        //
+        // For now, this path is unreachable (model never loads), and generation
+        // falls back to the honest template-based system in generatePlaceholder().
+        // ============================================================================
 
-        // Simulate processing time
-        let simulatedStepTime = 0.02  // 20ms per step
-        try await Task.sleep(nanoseconds: UInt64(Double(settings.steps) * simulatedStepTime * 1_000_000_000))
-
-        // Return base outline if provided, otherwise create empty
-        if let base = conditioning.baseOutline {
-            return base
+        // This code would run if a model was loaded - but no model exists
+        guard let base = conditioning.baseOutline else {
+            // Would run diffusion here if model existed
+            throw GeneratorError.modelNotLoaded
         }
 
-        return GlyphOutline()
+        return base
     }
 
     private func generatePlaceholder(
@@ -232,43 +629,259 @@ final class GlyphGenerator {
     ) async throws -> GenerationResult {
         let startTime = Date()
 
-        // Simulate generation time
-        try await Task.sleep(nanoseconds: 500_000_000)
+        // Yield to allow UI updates, but no fake delay
+        await Task.yield()
 
-        // Create a simple placeholder outline
-        let outline: GlyphOutline
-
+        // Extract style parameters from mode
+        let style: StyleEncoder.FontStyle
         switch mode {
+        case .fromScratch(let s):
+            style = s
+        case .completePartial(_, let s):
+            style = s
         case .variation(let base, _):
-            // Return slightly modified base
-            outline = base.outline
-
-        case .interpolate(let glyphA, _, let t):
-            // Return one of the glyphs based on t
-            outline = t < 0.5 ? glyphA.outline : glyphA.outline
-
-        case .completePartial(let partial, _):
-            // Return the partial as-is
-            outline = partial
-
-        case .fromScratch:
-            // Create empty outline
-            outline = GlyphOutline()
+            // Extract style from base glyph metrics
+            style = StyleEncoder.FontStyle.default
+            // Could enhance by analyzing base glyph
+            _ = base  // Acknowledge usage
+        case .interpolate(let glyphA, let glyphB, let t):
+            // Interpolate styles (use default as fallback)
+            style = styleEncoder.interpolate(.default, .default, t: t)
+            _ = (glyphA, glyphB)  // Acknowledge usage
         }
 
-        let bounds = outline.boundingBox
+        // Create outline based on mode
+        let outline: GlyphOutline
+        var advanceWidth: Int
+        var leftSideBearing: Int
+        var generationSource: GenerationSource = .placeholder  // Template-based placeholder, not real AI
+
+        switch mode {
+        case .variation(let base, let strength):
+            // Return base with slight scaling
+            outline = scaleOutline(base.outline, by: 1.0 + Double(strength) * PlaceholderParams.variationScale)
+            advanceWidth = Int(Double(base.advanceWidth) * (1.0 + Double(strength) * PlaceholderParams.variationScale))
+            leftSideBearing = base.leftSideBearing
+
+        case .interpolate(let glyphA, let glyphB, let t):
+            // Interpolate between the two outlines
+            outline = interpolateOutlines(glyphA.outline, glyphB.outline, t: Double(t))
+            advanceWidth = Int(Double(glyphA.advanceWidth) * Double(1 - t) + Double(glyphB.advanceWidth) * Double(t))
+            leftSideBearing = Int(Double(glyphA.leftSideBearing) * Double(1 - t) + Double(glyphB.leftSideBearing) * Double(t))
+
+        case .completePartial(let partial, _):
+            // Return the partial as-is (user provided it)
+            outline = partial
+            let bounds = partial.boundingBox
+            advanceWidth = bounds.width + Int(CGFloat(metrics.unitsPerEm) * 0.2)
+            leftSideBearing = Int(CGFloat(metrics.unitsPerEm) * 0.1)
+            generationSource = .manual  // User-provided
+
+        case .fromScratch:
+            // Generate using template system
+            let result = generateFromTemplate(
+                character: character,
+                metrics: metrics,
+                style: style
+            )
+            outline = result.outline
+            advanceWidth = result.advanceWidth
+            leftSideBearing = result.leftSideBearing
+        }
+
         let glyph = Glyph(
             character: character,
             outline: outline,
-            advanceWidth: max(bounds.width + Int(CGFloat(metrics.unitsPerEm) * 0.2), metrics.unitsPerEm / 2),
-            leftSideBearing: Int(CGFloat(metrics.unitsPerEm) * 0.1)
+            advanceWidth: advanceWidth,
+            leftSideBearing: leftSideBearing,
+            generatedBy: generationSource
         )
+
+        // Confidence based on generation quality
+        // Placeholder generation gets 0.0 (honest about lack of real AI)
+        // Only real AI generation should have non-zero confidence
+        let confidence: Float = generationSource == .aiGenerated ? ConfidenceScore.aiModel : ConfidenceScore.placeholder
 
         return GenerationResult(
             glyph: glyph,
-            confidence: 0.0,  // Zero confidence for placeholder
+            confidence: confidence,
             generationTime: Date().timeIntervalSince(startTime)
         )
+    }
+
+    /// Generate a glyph from the template library
+    private func generateFromTemplate(
+        character: Character,
+        metrics: FontMetrics,
+        style: StyleEncoder.FontStyle
+    ) -> (outline: GlyphOutline, advanceWidth: Int, leftSideBearing: Int) {
+        // Try to get a template for this character
+        if let template = templateLibrary.template(for: character) {
+            let styleParams = StrokeBuilder.StyleParams(from: style)
+
+            let outline = strokeBuilder.buildGlyph(
+                from: template,
+                metrics: metrics,
+                style: styleParams
+            )
+
+            let advanceWidth = strokeBuilder.calculateAdvanceWidth(
+                from: template,
+                metrics: metrics,
+                style: styleParams
+            )
+
+            let leftSideBearing = strokeBuilder.calculateLeftSideBearing(
+                from: template,
+                metrics: metrics,
+                style: styleParams
+            )
+
+            return (outline, advanceWidth, leftSideBearing)
+        }
+
+        // Fallback to geometric placeholder for unsupported characters
+        let outline = createGeometricPlaceholder(for: character, metrics: metrics)
+        let bounds = outline.boundingBox
+        let advanceWidth = max(bounds.width + Int(CGFloat(metrics.unitsPerEm) * SpacingRatio.rightSideBearing), Int(CGFloat(metrics.unitsPerEm) * SpacingRatio.minAdvanceWidth))
+        let leftSideBearing = Int(CGFloat(metrics.unitsPerEm) * 0.1)
+
+        return (outline, advanceWidth, leftSideBearing)
+    }
+
+    /// Creates a fallback geometric placeholder for characters without templates.
+    /// Used only when the template library doesn't have a definition for the character.
+    /// This creates a simple rectangle that's clearly identifiable as a placeholder.
+    private func createGeometricPlaceholder(for character: Character, metrics: FontMetrics) -> GlyphOutline {
+        let em = CGFloat(metrics.unitsPerEm)
+        let isUppercase = character.isUppercase
+        let isDigit = character.isNumber
+
+        // Determine height based on character type
+        let height: CGFloat
+        if isUppercase || isDigit {
+            height = CGFloat(metrics.capHeight)
+        } else if character.isLowercase {
+            height = CGFloat(metrics.xHeight)
+        } else {
+            height = em * PlaceholderParams.punctuationHeight
+        }
+
+        // Base width varies by character to look slightly different
+        let charValue = character.unicodeScalars.first?.value ?? 65
+        let widthVariation = CGFloat((charValue % 20)) / 100.0  // 0-20% variation
+        let width = em * (0.4 + widthVariation)
+
+        // Create a rectangle outline (not filled) to indicate missing glyph
+        // This is clearly identifiable as a placeholder
+        let margin = em * PlaceholderParams.margin
+        let strokeWidth = em * PlaceholderParams.strokeWidth
+
+        // Outer rectangle
+        let outerContour = Contour(
+            points: [
+                PathPoint(position: CGPoint(x: margin, y: 0), type: .corner),
+                PathPoint(position: CGPoint(x: width - margin, y: 0), type: .corner),
+                PathPoint(position: CGPoint(x: width - margin, y: height), type: .corner),
+                PathPoint(position: CGPoint(x: margin, y: height), type: .corner)
+            ],
+            isClosed: true
+        )
+
+        // Inner rectangle (creates hollow effect)
+        let innerContour = Contour(
+            points: [
+                PathPoint(position: CGPoint(x: margin + strokeWidth, y: strokeWidth), type: .corner),
+                PathPoint(position: CGPoint(x: margin + strokeWidth, y: height - strokeWidth), type: .corner),
+                PathPoint(position: CGPoint(x: width - margin - strokeWidth, y: height - strokeWidth), type: .corner),
+                PathPoint(position: CGPoint(x: width - margin - strokeWidth, y: strokeWidth), type: .corner)
+            ],
+            isClosed: true
+        )
+
+        return GlyphOutline(contours: [outerContour, innerContour])
+    }
+
+    private func scaleOutline(_ outline: GlyphOutline, by scale: Double) -> GlyphOutline {
+        guard !outline.isEmpty else { return outline }
+
+        let bounds = outline.boundingBox
+        let centerX = CGFloat(bounds.minX + bounds.width / 2)
+        let centerY = CGFloat(bounds.minY + bounds.height / 2)
+
+        var scaledContours: [Contour] = []
+        for contour in outline.contours {
+            var scaledPoints: [PathPoint] = []
+            for point in contour.points {
+                let newX = centerX + (point.position.x - centerX) * scale
+                let newY = centerY + (point.position.y - centerY) * scale
+                var newPoint = point
+                newPoint.position = CGPoint(x: newX, y: newY)
+
+                if let controlIn = point.controlIn {
+                    let newCIX = centerX + (controlIn.x - centerX) * scale
+                    let newCIY = centerY + (controlIn.y - centerY) * scale
+                    newPoint.controlIn = CGPoint(x: newCIX, y: newCIY)
+                }
+                if let controlOut = point.controlOut {
+                    let newCOX = centerX + (controlOut.x - centerX) * scale
+                    let newCOY = centerY + (controlOut.y - centerY) * scale
+                    newPoint.controlOut = CGPoint(x: newCOX, y: newCOY)
+                }
+
+                scaledPoints.append(newPoint)
+            }
+            scaledContours.append(Contour(points: scaledPoints, isClosed: contour.isClosed))
+        }
+
+        return GlyphOutline(contours: scaledContours)
+    }
+
+    private func interpolateOutlines(_ a: GlyphOutline, _ b: GlyphOutline, t: Double) -> GlyphOutline {
+        // Simple interpolation: if structures match, interpolate points
+        // Otherwise, crossfade based on t
+        guard a.contours.count == b.contours.count else {
+            return t < 0.5 ? a : b
+        }
+
+        var interpolatedContours: [Contour] = []
+        for (contourA, contourB) in zip(a.contours, b.contours) {
+            guard contourA.points.count == contourB.points.count else {
+                interpolatedContours.append(t < 0.5 ? contourA : contourB)
+                continue
+            }
+
+            var interpolatedPoints: [PathPoint] = []
+            for (pointA, pointB) in zip(contourA.points, contourB.points) {
+                let newX = pointA.position.x * (1 - t) + pointB.position.x * t
+                let newY = pointA.position.y * (1 - t) + pointB.position.y * t
+                var newPoint = PathPoint(
+                    position: CGPoint(x: newX, y: newY),
+                    type: t < 0.5 ? pointA.type : pointB.type
+                )
+
+                if let ciA = pointA.controlIn, let ciB = pointB.controlIn {
+                    newPoint.controlIn = CGPoint(
+                        x: ciA.x * (1 - t) + ciB.x * t,
+                        y: ciA.y * (1 - t) + ciB.y * t
+                    )
+                }
+                if let coA = pointA.controlOut, let coB = pointB.controlOut {
+                    newPoint.controlOut = CGPoint(
+                        x: coA.x * (1 - t) + coB.x * t,
+                        y: coA.y * (1 - t) + coB.y * t
+                    )
+                }
+
+                interpolatedPoints.append(newPoint)
+            }
+            interpolatedContours.append(Contour(
+                points: interpolatedPoints,
+                isClosed: contourA.isClosed || contourB.isClosed
+            ))
+        }
+
+        return GlyphOutline(contours: interpolatedContours)
     }
 
     private func createCharacterEmbedding(_ character: Character) -> [Float] {
@@ -315,5 +928,37 @@ final class GlyphGenerator {
         }
 
         return zip(a, b).map { $0 * (1 - t) + $1 * t }
+    }
+}
+
+// MARK: - CoreML Input Helper
+
+/// Input feature provider for the GlyphDiffusion model
+private class GlyphDiffusionInput: MLFeatureProvider {
+    let characterEmbedding: MLMultiArray
+    let styleEmbedding: MLMultiArray
+    let seed: MLMultiArray
+
+    var featureNames: Set<String> {
+        ["characterEmbedding", "styleEmbedding", "seed"]
+    }
+
+    func featureValue(for featureName: String) -> MLFeatureValue? {
+        switch featureName {
+        case "characterEmbedding":
+            return MLFeatureValue(multiArray: characterEmbedding)
+        case "styleEmbedding":
+            return MLFeatureValue(multiArray: styleEmbedding)
+        case "seed":
+            return MLFeatureValue(multiArray: seed)
+        default:
+            return nil
+        }
+    }
+
+    init(characterEmbedding: MLMultiArray, styleEmbedding: MLMultiArray, seed: MLMultiArray) {
+        self.characterEmbedding = characterEmbedding
+        self.styleEmbedding = styleEmbedding
+        self.seed = seed
     }
 }
