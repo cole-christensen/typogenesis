@@ -76,46 +76,51 @@ def create_dummy_glyph_diffusion_model():
         """
         Dummy diffusion model with correct interface for conversion testing.
 
-        Real implementation would include:
-        - UNet-style architecture for noise prediction
-        - Timestep embedding
-        - Character and style conditioning
-        - Attention mechanisms for high-quality generation
+        Matches the real GlyphDiffusionModel architecture from
+        scripts/models/glyph_diffusion/model.py:
+        - in_channels=1 (grayscale glyph images)
+        - char_indices as int64 indices (nn.Embedding lookup)
+        - style_embed as 128-dim float vector
+        - timesteps as float in [0, 1]
         """
 
         def __init__(
             self,
-            latent_channels: int = 4,
-            latent_size: int = 64,
-            character_embedding_dim: int = 128,
-            style_embedding_dim: int = 128,
+            in_channels: int = 1,
+            out_channels: int = 1,
+            image_size: int = 64,
+            num_characters: int = 62,
+            char_embed_dim: int = 64,
+            style_embed_dim: int = 128,
+            time_embed_dim: int = 256,
             hidden_dim: int = 256,
         ):
             super().__init__()
-            self.latent_channels = latent_channels
-            self.latent_size = latent_size
+            self.in_channels = in_channels
+            self.image_size = image_size
 
-            # Timestep embedding
+            # Timestep embedding (sinusoidal-style, takes float timesteps)
             self.time_embed = nn.Sequential(
-                nn.Linear(1, hidden_dim),
+                nn.Linear(1, time_embed_dim),
                 nn.SiLU(),
-                nn.Linear(hidden_dim, hidden_dim),
+                nn.Linear(time_embed_dim, hidden_dim),
             )
 
-            # Character conditioning
-            self.char_embed = nn.Sequential(
-                nn.Linear(character_embedding_dim, hidden_dim),
+            # Character conditioning (learned embedding from int64 indices)
+            self.char_embed = nn.Embedding(num_characters, char_embed_dim)
+            self.char_proj = nn.Sequential(
+                nn.Linear(char_embed_dim, hidden_dim),
                 nn.SiLU(),
             )
 
-            # Style conditioning
-            self.style_embed = nn.Sequential(
-                nn.Linear(style_embedding_dim, hidden_dim),
+            # Style conditioning (128-dim float vector)
+            self.style_proj = nn.Sequential(
+                nn.Linear(style_embed_dim, hidden_dim),
                 nn.SiLU(),
             )
 
             # Main denoising network (simplified)
-            self.conv_in = nn.Conv2d(latent_channels, hidden_dim, 3, padding=1)
+            self.conv_in = nn.Conv2d(in_channels, hidden_dim, 3, padding=1)
 
             self.blocks = nn.ModuleList([
                 nn.Sequential(
@@ -126,41 +131,44 @@ def create_dummy_glyph_diffusion_model():
                 for _ in range(4)
             ])
 
-            self.conv_out = nn.Conv2d(hidden_dim, latent_channels, 3, padding=1)
+            self.conv_out = nn.Conv2d(hidden_dim, out_channels, 3, padding=1)
 
         def forward(
             self,
-            noise: torch.Tensor,
-            character_embedding: torch.Tensor,
-            style_embedding: torch.Tensor,
-            timestep: torch.Tensor,
+            x: torch.Tensor,
+            timesteps: torch.Tensor,
+            char_indices: torch.Tensor,
+            style_embed: torch.Tensor,
         ) -> torch.Tensor:
             """
-            Forward pass for noise prediction.
+            Forward pass for velocity/noise prediction.
 
             Args:
-                noise: Noisy latent (B, C, H, W)
-                character_embedding: Character conditioning (B, 128)
-                style_embedding: Style conditioning (B, 128)
-                timestep: Current timestep (B,)
+                x: Noisy input (B, 1, H, W) - grayscale glyph image
+                timesteps: Timesteps in [0, 1] (B,) - float
+                char_indices: Character indices (B,) - int64
+                style_embed: Style conditioning (B, 128) - float
 
             Returns:
-                Predicted noise (B, C, H, W)
+                Predicted velocity (B, 1, H, W)
             """
-            batch_size = noise.shape[0]
+            batch_size = x.shape[0]
 
-            # Embed timestep (convert to float)
-            t_emb = self.time_embed(timestep.float().unsqueeze(-1))  # (B, hidden_dim)
+            # Embed timestep (float -> hidden_dim)
+            t_emb = self.time_embed(timesteps.float().unsqueeze(-1))  # (B, hidden_dim)
 
-            # Embed conditioning
-            c_emb = self.char_embed(character_embedding)  # (B, hidden_dim)
-            s_emb = self.style_embed(style_embedding)  # (B, hidden_dim)
+            # Embed character (int64 index -> hidden_dim)
+            c_emb = self.char_embed(char_indices)  # (B, char_embed_dim)
+            c_emb = self.char_proj(c_emb)  # (B, hidden_dim)
+
+            # Embed style (float vector -> hidden_dim)
+            s_emb = self.style_proj(style_embed)  # (B, hidden_dim)
 
             # Combined conditioning
             cond = t_emb + c_emb + s_emb  # (B, hidden_dim)
 
             # Initial convolution
-            h = self.conv_in(noise)  # (B, hidden_dim, H, W)
+            h = self.conv_in(x)  # (B, hidden_dim, H, W)
 
             # Add conditioning (broadcast across spatial dims)
             h = h + cond.unsqueeze(-1).unsqueeze(-1)
@@ -213,11 +221,11 @@ def export_glyph_diffusion_to_onnx(
 
     # Define dynamic axes for flexible batch size
     dynamic_axes = {
-        "noise": {0: "batch_size"},
-        "character_embedding": {0: "batch_size"},
-        "style_embedding": {0: "batch_size"},
-        "timestep": {0: "batch_size"},
-        "denoised": {0: "batch_size"},
+        "x": {0: "batch_size"},
+        "timesteps": {0: "batch_size"},
+        "char_indices": {0: "batch_size"},
+        "style_embed": {0: "batch_size"},
+        "velocity": {0: "batch_size"},
     }
 
     return export_to_onnx(
@@ -311,31 +319,31 @@ def verify_glyph_diffusion_conversion(
     pytorch_model.eval()
 
     for i in range(num_samples):
-        # Generate random inputs
-        noise = generate_random_input((1, 4, 64, 64), seed=i*100)
-        char_emb = generate_random_input((1, 128), seed=i*100+1)
+        # Generate random inputs matching real model architecture
+        x = generate_random_input((1, 1, 64, 64), seed=i*100)
+        timesteps = generate_random_input((1,), seed=i*100+1)  # float in [0, 1]
+        char_indices = np.array([i % 62], dtype=np.int64)  # int64 character index
         style_emb = generate_random_input((1, 128), seed=i*100+2)
-        timestep = np.array([i % 50], dtype=np.int64)
 
         # Run PyTorch model
         with torch.no_grad():
-            pt_noise = torch.from_numpy(noise)
-            pt_char = torch.from_numpy(char_emb)
+            pt_x = torch.from_numpy(x)
+            pt_timesteps = torch.from_numpy(timesteps)
+            pt_char = torch.from_numpy(char_indices)
             pt_style = torch.from_numpy(style_emb)
-            pt_time = torch.from_numpy(timestep)
 
-            pt_output = pytorch_model(pt_noise, pt_char, pt_style, pt_time)
+            pt_output = pytorch_model(pt_x, pt_timesteps, pt_char, pt_style)
             pt_output = pt_output.numpy()
 
         # Run CoreML model
         coreml_input = {
-            "noise": noise,
-            "character_embedding": char_emb,
-            "style_embedding": style_emb,
-            "timestep": timestep,
+            "x": x,
+            "timesteps": timesteps,
+            "char_indices": char_indices,
+            "style_embed": style_emb,
         }
         coreml_output = coreml_model.predict(coreml_input)
-        coreml_output = coreml_output["denoised"]
+        coreml_output = coreml_output["velocity"]
 
         # Compare outputs
         is_close, stats = compare_outputs(pt_output, coreml_output, rtol=rtol, atol=atol)

@@ -46,10 +46,13 @@ struct VariableFontEditor: View {
             Toggle("Variable Font", isOn: Binding(
                 get: { appState.currentProject?.variableConfig.isVariableFont ?? false },
                 set: { newValue in
-                    appState.currentProject?.variableConfig.isVariableFont = newValue
-                    if newValue && (appState.currentProject?.variableConfig.axes.isEmpty ?? true) {
-                        // Add default weight axis
-                        appState.currentProject?.variableConfig.axes = [.weight]
+                    if var project = appState.currentProject {
+                        project.variableConfig.isVariableFont = newValue
+                        if newValue && project.variableConfig.axes.isEmpty {
+                            // Add default weight axis
+                            project.variableConfig.axes = [.weight]
+                        }
+                        appState.currentProject = project
                     }
                 }
             ))
@@ -96,7 +99,10 @@ struct VariableFontEditor: View {
         .cornerRadius(8)
         .sheet(isPresented: $showAddAxisSheet) {
             AddAxisSheet { axis in
-                appState.currentProject?.variableConfig.axes.append(axis)
+                if var project = appState.currentProject {
+                    project.variableConfig.axes.append(axis)
+                    appState.currentProject = project
+                }
             }
         }
     }
@@ -113,7 +119,10 @@ struct VariableFontEditor: View {
                     .foregroundColor(.secondary)
                 Spacer()
                 Button(action: {
-                    appState.currentProject?.variableConfig.axes.removeAll { $0.id == axis.id }
+                    if var project = appState.currentProject {
+                        project.variableConfig.axes.removeAll { $0.id == axis.id }
+                        appState.currentProject = project
+                    }
                 }) {
                     Image(systemName: "trash")
                         .foregroundColor(.red)
@@ -181,7 +190,10 @@ struct VariableFontEditor: View {
         .cornerRadius(8)
         .sheet(isPresented: $showAddMasterSheet) {
             AddMasterSheet(axes: appState.currentProject?.variableConfig.axes ?? []) { master in
-                appState.currentProject?.variableConfig.masters.append(master)
+                if var project = appState.currentProject {
+                    project.variableConfig.masters.append(master)
+                    appState.currentProject = project
+                }
             }
         }
     }
@@ -212,7 +224,10 @@ struct VariableFontEditor: View {
             .controlSize(.small)
 
             Button(action: {
-                appState.currentProject?.variableConfig.masters.removeAll { $0.id == master.id }
+                if var project = appState.currentProject {
+                    project.variableConfig.masters.removeAll { $0.id == master.id }
+                    appState.currentProject = project
+                }
             }) {
                 Image(systemName: "trash")
                     .foregroundColor(.red)
@@ -261,7 +276,10 @@ struct VariableFontEditor: View {
         .cornerRadius(8)
         .sheet(isPresented: $showAddInstanceSheet) {
             AddInstanceSheet(axes: appState.currentProject?.variableConfig.axes ?? []) { instance in
-                appState.currentProject?.variableConfig.instances.append(instance)
+                if var project = appState.currentProject {
+                    project.variableConfig.instances.append(instance)
+                    appState.currentProject = project
+                }
             }
         }
     }
@@ -287,7 +305,10 @@ struct VariableFontEditor: View {
             .controlSize(.small)
 
             Button(action: {
-                appState.currentProject?.variableConfig.instances.removeAll { $0.id == instance.id }
+                if var project = appState.currentProject {
+                    project.variableConfig.instances.removeAll { $0.id == instance.id }
+                    appState.currentProject = project
+                }
             }) {
                 Image(systemName: "trash")
                     .foregroundColor(.red)

@@ -409,9 +409,17 @@ def load_checkpoint(
         Tuple of (epoch, step, loss).
     """
     logger.info(f"Loading checkpoint from {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
 
-    model.load_state_dict(checkpoint["model_state_dict"])
+    # Handle both full training checkpoint and bare state dict formats
+    if "model_state_dict" in checkpoint:
+        model.load_state_dict(checkpoint["model_state_dict"])
+    else:
+        # Bare state dict - load directly into model
+        model.load_state_dict(checkpoint)
+        logger.warning("Loaded bare state dict; optimizer/scheduler/EMA state not available")
+        return 0, 0, float("inf")
+
     ema.load_state_dict(checkpoint["ema_state_dict"])
     optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
     scheduler.load_state_dict(checkpoint["scheduler_state_dict"])

@@ -513,9 +513,11 @@ struct CloneWizard: View {
                     if viewModel.currentStep == .selectFont {
                         Task {
                             await viewModel.analyzeStyle()
+                            viewModel.nextStep()
                         }
+                    } else {
+                        viewModel.nextStep()
                     }
-                    viewModel.nextStep()
                 }
                 .buttonStyle(.borderedProminent)
                 .accessibilityIdentifier(AccessibilityID.Clone.nextButton)
@@ -701,8 +703,8 @@ final class CloneWizardViewModel: ObservableObject {
         isAnalyzing = true
         errorMessage = nil
 
-        // Run style extraction on a non-isolated context to avoid Sendable issues
-        let result: Result<StyleEncoder.FontStyle, Error> = await Task.detached {
+        // Run style extraction asynchronously
+        let result: Result<StyleEncoder.FontStyle, Error> = await Task {
             let encoder = StyleEncoder()
             do {
                 let style = try await encoder.extractStyle(from: font)
@@ -733,8 +735,8 @@ final class CloneWizardViewModel: ObservableObject {
         let characters = selectedCharacters
         let metrics = refFont.metrics
 
-        // Generate using batch method on a non-isolated context to avoid Sendable issues
-        let result: Result<[GlyphGenerator.GenerationResult], Error> = await Task.detached {
+        // Generate using batch method asynchronously
+        let result: Result<[GlyphGenerator.GenerationResult], Error> = await Task {
             let generator = GlyphGenerator()
             let mode = GlyphGenerator.GenerationMode.fromScratch(style: style)
             let settings = GlyphGenerator.GenerationSettings.default
@@ -745,11 +747,11 @@ final class CloneWizardViewModel: ObservableObject {
                     mode: mode,
                     metrics: metrics,
                     settings: settings
-                ) { completed, total in
-                    Task { @MainActor in
-                        self.generationProgress = Double(completed) / Double(total)
+                ) { [weak self] completed, total in
+                    Task { @MainActor [weak self] in
+                        self?.generationProgress = Double(completed) / Double(total)
                         if completed < characters.count {
-                            self.currentGeneratingCharacter = String(characters[completed])
+                            self?.currentGeneratingCharacter = String(characters[completed])
                         }
                     }
                 }

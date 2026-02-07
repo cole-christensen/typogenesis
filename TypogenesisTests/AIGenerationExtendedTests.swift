@@ -100,10 +100,12 @@ struct ExtendedGlyphGeneratorTests {
             settings: .fast
         )
 
-        // Should not crash when converting to CGPath
+        // Should produce a valid CGPath with a non-degenerate bounding box
         let path = result.glyph.outline.cgPath
-        // Path should be valid (not crashing is the main test)
-        _ = path.boundingBox
+        let bounds = path.boundingBox
+        #expect(!bounds.isNull, "CGPath bounding box should not be null")
+        #expect(bounds.width > 0, "CGPath should have non-zero width")
+        #expect(bounds.height > 0, "CGPath should have non-zero height")
     }
 
     @Test("Generated glyph bounding box is reasonable")
@@ -582,7 +584,7 @@ struct ExtendedKerningPredictorTests {
             let existsInAll = allResult.pairs.contains(where: {
                 $0.left == criticalPair.left && $0.right == criticalPair.right
             })
-            #expect(existsInAll || criticalResult.pairs.count <= allResult.pairs.count,
+            #expect(existsInAll,
                 "Critical pair \(criticalPair.left)\(criticalPair.right) should exist in all pairs result")
         }
     }

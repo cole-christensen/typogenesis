@@ -100,39 +100,40 @@ class ModelSpec:
 GLYPH_DIFFUSION_SPEC = ModelSpec(
     name="GlyphDiffusion",
     display_name="Glyph Generator",
-    description="Diffusion-based glyph generation model. Generates glyph outlines "
-                "conditioned on character class and style embedding.",
+    description="Flow-matching diffusion model for glyph generation. Generates "
+                "grayscale glyph images conditioned on character index and style embedding.",
     pytorch_filename="glyph_diffusion.pt",
     onnx_filename="glyph_diffusion.onnx",
     coreml_filename="GlyphDiffusion.mlpackage",
     inputs=[
         ModelInputSpec(
-            name="noise",
-            shape=(1, 4, 64, 64),  # Batch, channels, height, width
-            description="Latent noise tensor for diffusion process"
+            name="x",
+            shape=(1, 1, 64, 64),  # Batch, in_channels (grayscale), height, width
+            description="Noisy glyph image input"
         ),
         ModelInputSpec(
-            name="character_embedding",
-            shape=(1, 128),
-            description="One-hot or learned embedding for target character"
+            name="timesteps",
+            shape=(1,),
+            dtype="float32",
+            description="Flow-matching timestep in [0, 1]"
         ),
         ModelInputSpec(
-            name="style_embedding",
-            shape=(1, 128),
-            description="Style vector from StyleEncoder"
-        ),
-        ModelInputSpec(
-            name="timestep",
+            name="char_indices",
             shape=(1,),
             dtype="int64",
-            description="Current diffusion timestep (0 to num_steps-1)"
+            description="Character index (0-61 for a-z, A-Z, 0-9)"
+        ),
+        ModelInputSpec(
+            name="style_embed",
+            shape=(1, 128),
+            description="Style vector from StyleEncoder"
         ),
     ],
     outputs=[
         ModelOutputSpec(
-            name="denoised",
-            shape=(1, 4, 64, 64),
-            description="Denoised latent representation"
+            name="velocity",
+            shape=(1, 1, 64, 64),
+            description="Predicted velocity field for flow matching"
         ),
     ],
     opset_version=17,
@@ -142,7 +143,7 @@ GLYPH_DIFFUSION_SPEC = ModelSpec(
         "author": "Typogenesis",
         "version": "1.0.0",
         "diffusion_steps": "50",
-        "guidance_scale": "7.5",
+        "guidance_scale": "1.0",
     }
 )
 

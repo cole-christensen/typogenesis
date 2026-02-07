@@ -458,9 +458,13 @@ struct PathOperationsContainmentTests {
         let square = createSquareOutline(x: 0, y: 0, size: 100)
         let edgePoint = CGPoint(x: 0, y: 50)  // On left edge
 
-        // Point on edge may or may not be contained depending on implementation
-        let _ = PathOperations.contains(point: edgePoint, in: square)
-        // Just verify it doesn't crash
+        // PathOperations.contains uses CGPath.contains with .winding rule.
+        // The result for boundary points is implementation-defined, but
+        // it must return a deterministic Bool without crashing.
+        let result = PathOperations.contains(point: edgePoint, in: square)
+        // Verify the result is consistent across calls
+        let result2 = PathOperations.contains(point: edgePoint, in: square)
+        #expect(result == result2, "Point-on-edge containment should be deterministic")
     }
 
     @Test("Point inside triangle is contained")

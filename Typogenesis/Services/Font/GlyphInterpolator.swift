@@ -686,12 +686,18 @@ actor GlyphInterpolator {
             return baseGlyph
         }
 
-        // Collect all glyphs with their weights
+        // Collect all glyphs with their weights, skipping masters missing this glyph
         var glyphsWithWeights: [(glyph: Glyph, weight: CGFloat)] = []
         for wm in weightedMasters {
             if let glyph = wm.master.glyphs[character] {
                 glyphsWithWeights.append((glyph, wm.weight))
             }
+        }
+
+        // Renormalize weights to sum to 1.0 after skipping masters with missing glyphs
+        let weightSum = glyphsWithWeights.reduce(CGFloat(0)) { $0 + $1.weight }
+        if weightSum > 0 && abs(weightSum - 1.0) > 0.0001 {
+            glyphsWithWeights = glyphsWithWeights.map { ($0.glyph, $0.weight / weightSum) }
         }
 
         // Interpolate outline

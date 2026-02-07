@@ -5,7 +5,9 @@ struct GlyphCanvas: View {
     let metrics: FontMetrics
 
     @State private var scale: CGFloat = 1.0
+    @State private var baseScale: CGFloat = 1.0
     @State private var offset: CGSize = .zero
+    @State private var lastCommittedOffset: CGSize = .zero
     @State private var showGrid = true
     @State private var showMetrics = true
 
@@ -137,14 +139,28 @@ struct GlyphCanvas: View {
     private var magnificationGesture: some Gesture {
         MagnificationGesture()
             .onChanged { value in
-                scale = max(0.1, min(10, value))
+                scale = max(0.1, min(10, baseScale * value))
+            }
+            .onEnded { value in
+                baseScale = max(0.1, min(10, baseScale * value))
+                scale = baseScale
             }
     }
 
     private var dragGesture: some Gesture {
         DragGesture()
             .onChanged { value in
-                offset = value.translation
+                offset = CGSize(
+                    width: lastCommittedOffset.width + value.translation.width,
+                    height: lastCommittedOffset.height + value.translation.height
+                )
+            }
+            .onEnded { value in
+                lastCommittedOffset = CGSize(
+                    width: lastCommittedOffset.width + value.translation.width,
+                    height: lastCommittedOffset.height + value.translation.height
+                )
+                offset = lastCommittedOffset
             }
     }
 
@@ -162,7 +178,9 @@ struct GlyphCanvas: View {
 
             Button {
                 scale = 1.0
+                baseScale = 1.0
                 offset = .zero
+                lastCommittedOffset = .zero
             } label: {
                 Image(systemName: "arrow.counterclockwise")
             }

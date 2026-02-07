@@ -83,162 +83,72 @@ final class UILayoutBugTests: XCTestCase {
             "descender should be negative (below baseline)")
     }
 
-    // MARK: - Comprehensive GeometryReader and Canvas Sizing Test
-    // NOTE: testTextContentHandlingAcrossApp was deleted - it passed and found no bugs
+    // MARK: - Production BoundingBox and GlyphOutline Edge Cases
 
-    /// Tests that GeometryReader-based views handle edge case sizes correctly
-    /// including zero sizes, extreme aspect ratios, and rapid size changes.
-    /// NOTE: This test passes without finding real bugs - kept for documentation only.
-    ///
-    /// FAILURES FOUND: 0
-    func testGeometryReaderEdgeCases() throws {
-        // ============================================
-        // STEP 1: Test GlyphPreview scaling calculations
-        // ============================================
+    /// Tests that GlyphOutline.boundingBox (production code) handles edge cases:
+    /// empty outlines, single-point outlines, and degenerate contours.
+    /// GlyphPreview relies on boundingBox to compute scaling transforms.
+    func testBoundingBoxEdgeCases() throws {
+        // Empty outline should produce zero bounding box
+        let emptyOutline = GlyphOutline()
+        let emptyBB = emptyOutline.boundingBox
+        XCTAssertEqual(emptyBB.width, 0, "Empty outline bounding box width should be 0")
+        XCTAssertEqual(emptyBB.height, 0, "Empty outline bounding box height should be 0")
 
-        // The GlyphPreview in GlyphGrid.swift:194-215 does:
-        // let scaleX = size.width / CGFloat(max(boundingBox.width, 1))
-        // let scaleY = size.height / CGFloat(max(boundingBox.height, 1))
-        // let scale = min(scaleX, scaleY) * 0.9
+        // Outline with empty contour should also produce zero bounding box
+        let emptyContourOutline = GlyphOutline(contours: [Contour(points: [], isClosed: true)])
+        let emptyContourBB = emptyContourOutline.boundingBox
+        XCTAssertEqual(emptyContourBB.width, 0, "Empty contour bounding box width should be 0")
+        XCTAssertEqual(emptyContourBB.height, 0, "Empty contour bounding box height should be 0")
 
-        // Test with various bounding boxes and view sizes
-        let testCases: [(viewSize: CGSize, boxSize: CGSize, description: String)] = [
-            (CGSize(width: 60, height: 60), CGSize(width: 500, height: 500), "Normal square"),
-            (CGSize(width: 60, height: 60), CGSize(width: 0, height: 0), "Zero bounding box"),
-            (CGSize(width: 60, height: 60), CGSize(width: 1, height: 1000), "Tall thin"),
-            (CGSize(width: 60, height: 60), CGSize(width: 1000, height: 1), "Wide flat"),
-            (CGSize(width: 0, height: 0), CGSize(width: 500, height: 500), "Zero view size"),
-            (CGSize(width: 1, height: 1), CGSize(width: 500, height: 500), "Tiny view"),
-            (CGSize(width: 10000, height: 10000), CGSize(width: 1, height: 1), "Huge view tiny box"),
-            (CGSize(width: 60, height: 60), CGSize(width: -100, height: -100), "Negative bounding box"),
-        ]
+        // Single point outline produces zero-area bounding box
+        let singlePointOutline = GlyphOutline(contours: [
+            Contour(points: [
+                PathPoint(position: CGPoint(x: 100, y: 200), type: .corner)
+            ], isClosed: true)
+        ])
+        let singleBB = singlePointOutline.boundingBox
+        XCTAssertEqual(singleBB.width, 0, "Single point bounding box should have zero width")
+        XCTAssertEqual(singleBB.height, 0, "Single point bounding box should have zero height")
 
-        for testCase in testCases {
-            let viewSize = testCase.viewSize
-            let boxSize = testCase.boxSize
+        // Normal outline should produce valid bounding box
+        let normalOutline = GlyphOutline(contours: [
+            Contour(points: [
+                PathPoint(position: CGPoint(x: 50, y: 0), type: .corner),
+                PathPoint(position: CGPoint(x: 450, y: 0), type: .corner),
+                PathPoint(position: CGPoint(x: 450, y: 700), type: .corner),
+                PathPoint(position: CGPoint(x: 50, y: 700), type: .corner),
+            ], isClosed: true)
+        ])
+        let normalBB = normalOutline.boundingBox
+        XCTAssertEqual(normalBB.width, 400, "Normal bounding box width")
+        XCTAssertEqual(normalBB.height, 700, "Normal bounding box height")
+        XCTAssertEqual(normalBB.minX, 50)
+        XCTAssertEqual(normalBB.maxX, 450)
+    }
 
-            // Simulate the scaling calculation
-            let safeWidth = max(boxSize.width, 1)
-            let safeHeight = max(boxSize.height, 1)
+    /// Tests that GlyphOutline.cgPath (production code) handles edge cases
+    /// without crashing, and produces non-degenerate paths for valid outlines.
+    func testCGPathEdgeCases() throws {
+        // Empty outline produces a valid (empty) CGPath
+        let emptyPath = GlyphOutline().cgPath
+        XCTAssertTrue(emptyPath.isEmpty, "Empty outline should produce empty CGPath")
 
-            let scaleX = viewSize.width / safeWidth
-            let scaleY = viewSize.height / safeHeight
-            let scale = min(scaleX, scaleY) * 0.9
-
-            // Verify scale is valid
-            XCTAssertFalse(scale.isNaN, "Scale should not be NaN for \(testCase.description)")
-            XCTAssertFalse(scale.isInfinite, "Scale should not be infinite for \(testCase.description)")
-            XCTAssertGreaterThanOrEqual(scale, 0, "Scale should be non-negative for \(testCase.description)")
-
-            // Verify offset calculations don't overflow
-            let scaledWidth = boxSize.width * scale
-            let scaledHeight = boxSize.height * scale
-            let offsetX = (viewSize.width - scaledWidth) / 2
-            let offsetY = (viewSize.height - scaledHeight) / 2
-
-            XCTAssertFalse(offsetX.isNaN, "OffsetX should not be NaN for \(testCase.description)")
-            XCTAssertFalse(offsetY.isNaN, "OffsetY should not be NaN for \(testCase.description)")
-        }
-
-        // ============================================
-        // STEP 2: Test ImportFontSheet progress bar bounds
-        // ============================================
-
-        // ImportFontSheet.swift:265 uses geometry.size.width * CGFloat(value)
-        // where value should be 0-1 but might not be validated
-
-        let progressTestValues: [Float] = [
-            -1.0,      // Negative
-            -0.001,    // Slightly negative
-            0,         // Zero
-            0.5,       // Normal
-            1.0,       // Full
-            1.001,     // Slightly over
-            2.0,       // Way over
-            100.0,     // Extreme
-            Float.infinity,
-            -Float.infinity,
-            Float.nan,
-        ]
-
-        for value in progressTestValues {
-            let barWidth: CGFloat = 200  // Simulated geometry width
-            let fillWidth = barWidth * CGFloat(value)
-
-            // Check for issues
-            if value.isNaN {
-                XCTAssertTrue(fillWidth.isNaN,
-                    "NaN progress produces NaN width (will render incorrectly)")
-            } else if value.isInfinite {
-                XCTAssertTrue(fillWidth.isInfinite,
-                    "Infinite progress produces infinite width (will crash or overflow)")
-            } else if value < 0 {
-                XCTAssertLessThan(fillWidth, 0,
-                    "BUG: Negative progress \(value) produces negative bar width \(fillWidth)")
-            } else if value > 1 {
-                XCTAssertGreaterThan(fillWidth, barWidth,
-                    "BUG: Progress \(value) > 1 overflows bar container (width \(fillWidth) > \(barWidth))")
-            }
-        }
-
-        // ============================================
-        // STEP 3: Test HandwritingScanner rect scaling
-        // ============================================
-
-        // HandwritingScanner.swift:783-793 scaleRect function
-        func scaleRect(_ rect: CGRect, to viewSize: CGSize, imageSize: CGSize) -> CGRect {
-            guard imageSize.width > 0, imageSize.height > 0 else {
-                return .zero  // Handle zero image size
-            }
-
-            let scale = min(viewSize.width / imageSize.width, viewSize.height / imageSize.height)
-            let offsetX = (viewSize.width - imageSize.width * scale) / 2
-            let offsetY = (viewSize.height - imageSize.height * scale) / 2
-
-            return CGRect(
-                x: rect.origin.x * scale + offsetX,
-                y: rect.origin.y * scale + offsetY,
-                width: rect.width * scale,
-                height: rect.height * scale
-            )
-        }
-
-        // Test with extreme aspect ratios
-        let extremeImageCases: [(image: CGSize, view: CGSize, desc: String)] = [
-            (CGSize(width: 100, height: 5000), CGSize(width: 400, height: 400), "Very tall image"),
-            (CGSize(width: 5000, height: 100), CGSize(width: 400, height: 400), "Very wide image"),
-            (CGSize(width: 1, height: 10000), CGSize(width: 400, height: 400), "Extreme tall"),
-            (CGSize(width: 10000, height: 1), CGSize(width: 400, height: 400), "Extreme wide"),
-            (CGSize(width: 0, height: 0), CGSize(width: 400, height: 400), "Zero image"),
-            (CGSize(width: 400, height: 400), CGSize(width: 0, height: 0), "Zero view"),
-        ]
-
-        for testCase in extremeImageCases {
-            let inputRect = CGRect(x: 10, y: 10, width: 50, height: 50)
-            let result = scaleRect(inputRect, to: testCase.view, imageSize: testCase.image)
-
-            XCTAssertFalse(result.origin.x.isNaN, "Scaled rect X should not be NaN for \(testCase.desc)")
-            XCTAssertFalse(result.origin.y.isNaN, "Scaled rect Y should not be NaN for \(testCase.desc)")
-            XCTAssertFalse(result.width.isNaN, "Scaled rect width should not be NaN for \(testCase.desc)")
-            XCTAssertFalse(result.height.isNaN, "Scaled rect height should not be NaN for \(testCase.desc)")
-
-            // Check for extreme scaling that would make UI unusable.
-            // Extreme aspect ratios (e.g. 10000:1) will naturally scale to tiny heights.
-            // Only flag as a bug when a normally-proportioned image scales too small.
-            if testCase.image.width > 0 && testCase.image.height > 0 {
-                let scale = min(testCase.view.width / testCase.image.width,
-                               testCase.view.height / testCase.image.height)
-                let scaledHeight = testCase.image.height * scale
-                let aspectRatio = testCase.image.width / testCase.image.height
-
-                // Only assert for non-extreme aspect ratios (< 20:1)
-                // Extreme ratios are expected to scale to very small sizes
-                if testCase.view.height > 100 && aspectRatio < 20 {
-                    XCTAssertGreaterThanOrEqual(scaledHeight, 20,
-                        "BUG: \(testCase.desc) - Image scales to only \(scaledHeight)px tall in a \(testCase.view.height)px view, may be unusable")
-                }
-            }
-        }
+        // Normal outline produces a non-empty path with correct bounds
+        let outline = GlyphOutline(contours: [
+            Contour(points: [
+                PathPoint(position: CGPoint(x: 0, y: 0), type: .corner),
+                PathPoint(position: CGPoint(x: 100, y: 0), type: .corner),
+                PathPoint(position: CGPoint(x: 100, y: 100), type: .corner),
+                PathPoint(position: CGPoint(x: 0, y: 100), type: .corner),
+            ], isClosed: true)
+        ])
+        let path = outline.cgPath
+        XCTAssertFalse(path.isEmpty, "Normal outline should produce non-empty CGPath")
+        let bounds = path.boundingBox
+        XCTAssertFalse(bounds.isNull, "CGPath bounds should not be null")
+        XCTAssertEqual(bounds.width, 100, accuracy: 0.01, "CGPath width should match outline")
+        XCTAssertEqual(bounds.height, 100, accuracy: 0.01, "CGPath height should match outline")
     }
 
     // MARK: - Content-Driven Split View Behavior Test
@@ -277,150 +187,69 @@ final class UILayoutBugTests: XCTestCase {
             "Accessibility ID map has \(expectedIDs.count) entries but SidebarItem has \(AppState.SidebarItem.allCases.count) cases")
     }
 
-    // MARK: - Division by Zero and Metrics Edge Cases Test
+    // MARK: - FontMetrics and BoundingBox Production Code Edge Cases
 
-    /// Tests potential division by zero bugs when metrics have invalid values.
-    /// These bugs exist in multiple views that divide by unitsPerEm.
-    ///
-    /// FAILURES FOUND: TBD
-    func testDivisionByZeroInMetricsScaling() throws {
-        // ============================================
-        // STEP 1: Test FontMetrics with zero unitsPerEm
-        // ============================================
+    /// Tests production FontMetrics properties for values used in layout calculations.
+    /// Multiple views divide by unitsPerEm, so defaults must be safe.
+    func testFontMetricsLayoutSafety() throws {
+        // Default FontMetrics must have positive unitsPerEm to prevent division by zero
+        let metrics = FontMetrics()
+        XCTAssertEqual(metrics.unitsPerEm, 1000, "Default unitsPerEm should be 1000")
+        XCTAssertGreaterThan(metrics.unitsPerEm, 0,
+            "unitsPerEm must be positive to avoid division by zero in layout calculations")
 
-        // The following views all divide by unitsPerEm without guards:
-        // - InteractiveGlyphCanvas.swift:132 - hit tolerance calculation
-        // - InteractiveGlyphCanvas.swift:203 - scale factor for dragging
-        // - GlyphCanvas.swift:44 - base scale calculation
-        // - GenerateView.swift:410 - preview scale
-        // - KerningEditor.swift:358 - preview scale
-        // - FontPreviewPanel.swift:227 - preview scale
-        // - VariableFontEditor.swift:410, 439 - preview scales
+        // FontMetrics allows zero unitsPerEm (no validation in init).
+        // This documents the risk: views that divide by unitsPerEm must guard against zero.
+        let zeroMetrics = FontMetrics(unitsPerEm: 0)
+        XCTAssertEqual(zeroMetrics.unitsPerEm, 0,
+            "FontMetrics allows zero unitsPerEm (views must guard against this)")
 
-        var metrics = FontMetrics()
-        XCTAssertEqual(metrics.unitsPerEm, 1000, "Default should be 1000")
+        // Negative unitsPerEm is also allowed but would invert glyph rendering.
+        let negativeMetrics = FontMetrics(unitsPerEm: -1000)
+        XCTAssertEqual(negativeMetrics.unitsPerEm, -1000,
+            "FontMetrics allows negative unitsPerEm (views must guard against this)")
 
-        // Set to zero - this is the bug condition
-        metrics.unitsPerEm = 0
+        // Ascender/descender relationship: ascender should be above baseline
+        XCTAssertGreaterThan(metrics.ascender, metrics.baseline,
+            "Ascender should be above baseline")
+        XCTAssertLessThan(metrics.descender, metrics.baseline,
+            "Descender should be below baseline")
+    }
 
-        // These calculations would crash or produce infinity:
-        // In production code: let scale = fontSize / CGFloat(metrics.unitsPerEm)
-        // Simulating what the code does:
-        let fontSize: CGFloat = 72
-        let unitsPerEm = metrics.unitsPerEm
+    /// Tests production BoundingBox computed properties (width, height, cgRect)
+    /// to verify correct behavior with edge case values.
+    func testBoundingBoxComputedProperties() throws {
+        // Zero-area bounding box (e.g., from empty glyph outline)
+        let zeroBB = BoundingBox(minX: 0, minY: 0, maxX: 0, maxY: 0)
+        XCTAssertEqual(zeroBB.width, 0, "Zero bounding box width")
+        XCTAssertEqual(zeroBB.height, 0, "Zero bounding box height")
+        XCTAssertEqual(zeroBB.cgRect, CGRect.zero, "Zero bounding box cgRect")
 
-        // BUG: No guard in production code - this produces infinity
-        // Note: We test division by zero behavior directly
-        let unsafeScale = fontSize / CGFloat(max(unitsPerEm, 1))  // Safe version for test
-        let wouldBeInfinite = unitsPerEm == 0  // The bug condition
-        XCTAssertTrue(wouldBeInfinite,
-            "BUG VERIFIED: Zero unitsPerEm would produce infinite scale. Views should guard against this but don't.")
-        XCTAssertFalse(unsafeScale.isInfinite, "Safe version with max() guard works")
+        // Normal bounding box
+        let normalBB = BoundingBox(minX: 50, minY: 0, maxX: 450, maxY: 700)
+        XCTAssertEqual(normalBB.width, 400)
+        XCTAssertEqual(normalBB.height, 700)
+        XCTAssertEqual(normalBB.cgRect, CGRect(x: 50, y: 0, width: 400, height: 700))
 
-        // ============================================
-        // STEP 2: Test negative unitsPerEm
-        // ============================================
+        // Bounding box with negative coordinates (descender glyphs)
+        let descenderBB = BoundingBox(minX: 50, minY: -200, maxX: 450, maxY: 500)
+        XCTAssertEqual(descenderBB.width, 400)
+        XCTAssertEqual(descenderBB.height, 700)
+        XCTAssertEqual(descenderBB.cgRect.origin.y, -200)
+    }
 
-        metrics.unitsPerEm = -1000
-
-        // Negative unitsPerEm produces negative scale, inverting the glyph
-        let negativeScale = fontSize / CGFloat(metrics.unitsPerEm)
-        XCTAssertLessThan(negativeScale, 0,
-            "BUG: Negative unitsPerEm produces negative scale (\(negativeScale)), inverting glyphs. No validation exists.")
-
-        // ============================================
-        // STEP 3: Test zero-sized GeometryReader
-        // ============================================
-
-        // GeometryReader can provide zero-sized frames before layout completes
-        // GlyphGrid.swift:199-200:
-        //   let scaleX = size.width / CGFloat(max(boundingBox.width, 1))
-        //   let scaleY = size.height / CGFloat(max(boundingBox.height, 1))
-        //
-        // If size.width or size.height is 0, the result is 0, which when used
-        // for transformations produces collapsed views.
-
-        let zeroSize = CGSize(width: 0, height: 0)
-        let boundingBox = BoundingBox(minX: 0, minY: 0, maxX: 100, maxY: 100)
-
-        let scaleX = zeroSize.width / CGFloat(max(boundingBox.width, 1))
-        let scaleY = zeroSize.height / CGFloat(max(boundingBox.height, 1))
-
-        XCTAssertEqual(scaleX, 0, "Zero width produces zero scale")
-        XCTAssertEqual(scaleY, 0, "Zero height produces zero scale")
-
-        // BUG: These zero scales mean all transforms collapse to a point
-        // The code doesn't guard against this
-        let scale = min(scaleX, scaleY) * 0.9
-        XCTAssertEqual(scale, 0,
-            "BUG: GeometryReader can provide zero size, producing zero scale, collapsing entire glyph preview")
-
-        // ============================================
-        // STEP 4: Test zero bounding box dimensions
-        // ============================================
-
-        // GenerateView.swift:617-618:
-        //   let scaleX = (size.width - 8) / CGFloat(bounds.width)
-        //   let scaleY = (size.height - 8) / CGFloat(bounds.height)
-        //
-        // BUG: No guard for bounds.width or bounds.height being 0
-
-        let zeroBounds = BoundingBox(minX: 0, minY: 0, maxX: 0, maxY: 0)
-        XCTAssertEqual(zeroBounds.width, 0, "Zero-width bounding box")
-        XCTAssertEqual(zeroBounds.height, 0, "Zero-height bounding box")
-
-        // This would crash or produce infinity in production:
-        // let scaleX = (size.width - 8) / CGFloat(zeroBounds.width)
-        // Verified: BUG exists - no guard in GenerateView.swift
-
-        // ============================================
-        // STEP 5: Test InteractiveGlyphCanvas hit tolerance
-        // ============================================
-
-        // InteractiveGlyphCanvas.swift:132:
-        //   let screenTolerance = hitTolerance / (scale * min(size.width, size.height) / CGFloat(metrics.unitsPerEm) * 0.7)
-        //
-        // If any denominator component is 0, this crashes or produces infinity
-
-        let zeroSizeMin = min(zeroSize.width, zeroSize.height)  // 0
-        let scaleFactor = 1.0 * zeroSizeMin / CGFloat(1000) * 0.7  // 0
-        let hitTolerance: CGFloat = 10.0
-
-        // This would be: hitTolerance / 0 = infinity
-        let computedTolerance = scaleFactor == 0 ? CGFloat.infinity : hitTolerance / scaleFactor
-        XCTAssertTrue(computedTolerance.isInfinite,
-            "BUG VERIFIED: Zero size produces infinite hit tolerance in InteractiveGlyphCanvas")
-
-        // ============================================
-        // STEP 6: Test extreme aspect ratios
-        // ============================================
-
-        // Very wide or very tall views can produce extreme scale values
-        let extremeWide = CGSize(width: 10000, height: 10)
-        let extremeTall = CGSize(width: 10, height: 10000)
-
-        let wideScaleX = extremeWide.width / CGFloat(max(boundingBox.width, 1))
-        let wideScaleY = extremeWide.height / CGFloat(max(boundingBox.height, 1))
-        let wideScale = min(wideScaleX, wideScaleY)
-
-        XCTAssertEqual(wideScale, 0.1, accuracy: 0.01,
-            "Extreme wide aspect uses constrained scale")
-
-        let tallScaleX = extremeTall.width / CGFloat(max(boundingBox.width, 1))
-        let tallScaleY = extremeTall.height / CGFloat(max(boundingBox.height, 1))
-        let tallScale = min(tallScaleX, tallScaleY)
-
-        XCTAssertEqual(tallScale, 0.1, accuracy: 0.01,
-            "Extreme tall aspect uses constrained scale")
-
-        // ============================================
-        // STEP 7: Verify FontMetrics rejects zero/negative unitsPerEm in practice
-        // ============================================
-
-        // A FontMetrics with unitsPerEm == 0 will cause division-by-zero crashes
-        // in multiple views. Verify the default is always safe.
-        let freshMetrics = FontMetrics()
-        XCTAssertGreaterThan(freshMetrics.unitsPerEm, 0,
-            "Default FontMetrics.unitsPerEm must be positive to prevent division by zero")
+    /// Tests that GlyphOutline.boundingBox produces correct zero-area results
+    /// for empty outlines, which downstream views use for scaling calculations.
+    /// Views that divide by boundingBox.width or height must guard against zero.
+    func testEmptyOutlineBoundingBoxForScaling() throws {
+        // An empty outline's bounding box has zero dimensions.
+        // GlyphPreview in GlyphGrid.swift uses max(boundingBox.width, 1) to guard.
+        // GenerateView.swift does NOT guard, which would cause division by zero.
+        let emptyOutline = GlyphOutline()
+        let bb = emptyOutline.boundingBox
+        XCTAssertEqual(bb.width, 0,
+            "Empty outline bounding box has zero width - views must guard before dividing by this")
+        XCTAssertEqual(bb.height, 0,
+            "Empty outline bounding box has zero height - views must guard before dividing by this")
     }
 }

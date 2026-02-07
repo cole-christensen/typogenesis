@@ -142,13 +142,52 @@ final class StyleEncoder: @unchecked Sendable {
             throw StyleEncoderError.modelNotLoaded
         }
 
-        // Render glyph to image
+        // Render glyph to image; fall back to geometric analysis if rendering fails
         guard let glyphImage = renderGlyphForEncoding(glyph) else {
-            throw StyleEncoderError.invalidInput
+            Self.logger.info("Failed to render glyph for encoding, falling back to geometric analysis")
+            return analyzeGlyphGeometry(glyph)
         }
 
-        // Run through model
-        return try await encodeImage(glyphImage)
+        // Run through model; fall back to geometric analysis if encoding fails
+        do {
+            return try await encodeImage(glyphImage)
+        } catch {
+            Self.logger.warning("Glyph encoding failed: \(error.localizedDescription), falling back to geometric analysis")
+            return analyzeGlyphGeometry(glyph)
+        }
+    }
+
+    /// Geometric analysis fallback for glyph encoding when image-based encoding fails
+    private func analyzeGlyphGeometry(_ glyph: Glyph) -> [Float] {
+        var embedding = [Float](repeating: 0, count: EncodingParams.embeddingDimension)
+
+        let bounds = glyph.outline.boundingBox
+        let pointCount = glyph.outline.contours.reduce(0) { $0 + $1.points.count }
+        let contourCount = glyph.outline.contours.count
+
+        // Encode basic geometric features
+        embedding[0] = bounds.height > 0 ? Float(bounds.width) / Float(bounds.height) : 0.5
+        embedding[1] = Float(pointCount) / 100.0
+        embedding[2] = Float(contourCount) / 10.0
+        embedding[3] = estimateStrokeWeight(glyph.outline)
+        embedding[4] = Float(bounds.width) / 1000.0
+        embedding[5] = Float(bounds.height) / 1000.0
+
+        // Analyze curve vs corner ratio
+        var curves = 0
+        var corners = 0
+        for contour in glyph.outline.contours {
+            for point in contour.points {
+                switch point.type {
+                case .corner: corners += 1
+                case .smooth, .symmetric: curves += 1
+                }
+            }
+        }
+        let total = curves + corners
+        embedding[6] = total > 0 ? Float(curves) / Float(total) : 0.5
+
+        return embedding
     }
 
     /// Compute similarity between two styles (0-1, 1 = identical)
@@ -182,7 +221,8 @@ final class StyleEncoder: @unchecked Sendable {
             weights += 3
         }
 
-        return totalSimilarity / weights
+        let result = totalSimilarity / weights
+        return max(0, min(1, result))
     }
 
     /// Interpolate between two styles
@@ -472,9 +512,23 @@ final class StyleEncoder: @unchecked Sendable {
             embedding = computeStatisticalEmbedding(image)
         }
 
-        // Cache the result
-        cacheEmbedding(embedding, for: cacheKey)
+        // Guard against degenerate (zero-vector) embeddings that would cause NaN in cosine similarity
+        let safedEmbedding = ensureNonZeroEmbedding(embedding)
 
+        // Cache the result
+        cacheEmbedding(safedEmbedding, for: cacheKey)
+
+        return safedEmbedding
+    }
+
+    /// Ensure embedding is not a zero vector, which would produce NaN in cosine similarity.
+    /// Returns a small default embedding if the magnitude is near zero.
+    private func ensureNonZeroEmbedding(_ embedding: [Float]) -> [Float] {
+        let magnitude = sqrt(embedding.reduce(0) { $0 + $1 * $1 })
+        if magnitude < 1e-8 {
+            // Return a small uniform embedding instead of zeros
+            return [Float](repeating: 1e-4, count: embedding.count)
+        }
         return embedding
     }
 
@@ -725,7 +779,8 @@ final class StyleEncoder: @unchecked Sendable {
         }
 
         let count = Float(embeddings.count)
-        return result.map { $0 / count }
+        let averaged = result.map { $0 / count }
+        return ensureNonZeroEmbedding(averaged)
     }
 
     private func interpolateEmbedding(_ a: [Float], _ b: [Float], _ t: Float) -> [Float] {

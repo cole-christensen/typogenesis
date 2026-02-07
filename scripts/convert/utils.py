@@ -97,8 +97,11 @@ def load_pytorch_model(
 
         # Check if it's a state dict or a full model
         if isinstance(checkpoint, dict):
-            if "model" in checkpoint:
-                # Training checkpoint format
+            if "model_state_dict" in checkpoint:
+                # Training checkpoint format (used by Typogenesis training scripts)
+                state_dict = checkpoint["model_state_dict"]
+            elif "model" in checkpoint:
+                # Alternative training checkpoint format
                 state_dict = checkpoint["model"]
             elif "state_dict" in checkpoint:
                 state_dict = checkpoint["state_dict"]
@@ -332,7 +335,6 @@ def convert_onnx_to_coreml(
         RuntimeError: If conversion fails
     """
     import coremltools as ct
-    from coremltools.models.neural_network import quantization_utils
 
     onnx_path = Path(onnx_path)
     output_path = Path(output_path)
@@ -377,9 +379,22 @@ def convert_onnx_to_coreml(
         # Convert to float16 if requested (for smaller model size)
         if convert_to_float16:
             logger.info("  Converting to float16 precision...")
-            mlmodel = ct.models.neural_network.quantization_utils.quantize_weights(
-                mlmodel, nbits=16
-            ) if hasattr(ct.models.neural_network.quantization_utils, 'quantize_weights') else mlmodel
+            try:
+                # Use the modern coremltools >= 7.0 API
+                op_config = ct.optimize.coreml.OpLinearQuantizerConfig(
+                    mode="linear_symmetric", dtype="float16"
+                )
+                config = ct.optimize.coreml.OptimizationConfig(
+                    global_config=op_config
+                )
+                mlmodel = ct.optimize.coreml.linear_quantize_weights(
+                    mlmodel, config=config
+                )
+            except AttributeError:
+                logger.warning(
+                    "  ct.optimize.coreml.linear_quantize_weights not available. "
+                    "Skipping float16 quantization. Update coremltools >= 7.0."
+                )
 
         # Set metadata
         mlmodel.author = author or "Typogenesis"

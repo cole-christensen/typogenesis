@@ -7,6 +7,7 @@ actor WebFontExporter {
     enum WebFontError: Error, LocalizedError {
         case compressionFailed
         case invalidInput
+        case tooManyTables(Int)
 
         var errorDescription: String? {
             switch self {
@@ -14,6 +15,8 @@ actor WebFontExporter {
                 return "Failed to compress font data"
             case .invalidInput:
                 return "Invalid font data"
+            case .tooManyTables(let count):
+                return "Font has \(count) tables, exceeding the maximum of 65535"
             }
         }
     }
@@ -28,6 +31,10 @@ actor WebFontExporter {
 
         // Parse TTF structure
         let tables = try parseTTFTables(from: ttfData)
+
+        guard tables.count <= Int(UInt16.max) else {
+            throw WebFontError.tooManyTables(tables.count)
+        }
 
         // WOFF Header
         var woffData = Data()
@@ -151,6 +158,10 @@ actor WebFontExporter {
             "gvar", "hsty", "just", "lcar", "mort", "morx", "opbd", "prop",
             "trak", "Zapf", "Silf", "Glat", "Gloc", "Feat", "Sill"
         ]
+
+        guard tables.count <= Int(UInt16.max) else {
+            throw WebFontError.tooManyTables(tables.count)
+        }
 
         // Sort tables according to WOFF2 recommended order
         let sortedTables = tables.sorted { t1, t2 in

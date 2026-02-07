@@ -431,8 +431,12 @@ class Trainer:
     ) -> torch.Tensor:
         """Compute contrastive loss based on configuration.
 
-        For NT-Xent: Creates positive pairs from same-font glyphs
+        For NT-Xent: Creates positive pairs from same-font glyphs using labels.
+            The collate function flattens fonts sequentially, so we use the font
+            labels to identify which glyphs belong to the same font, then select
+            two glyphs per font to form correct positive pairs (z_i, z_j).
         For Triplet: Mines hard negatives from batch
+        For InfoNCE: Pairs glyphs from the same font as query/key
 
         Args:
             projections: Projected embeddings, shape (batch_size, projection_dim)
@@ -442,17 +446,25 @@ class Trainer:
             Loss tensor.
         """
         if self.config.loss.loss_type == "nt_xent":
-            # Split batch into two views for NT-Xent
-            # Assumes glyphs_per_font >= 2 and batch is ordered by font
-            batch_size = projections.shape[0]
-            mid = batch_size // 2
-            z_i = projections[:mid]
-            z_j = projections[mid:]
+            # Build positive pairs from same-font glyphs using labels.
+            # The collate function groups glyphs by font sequentially, so
+            # we pick the first two glyphs from each font as the two views.
+            unique_labels = labels.unique()
+            z_i_list = []
+            z_j_list = []
+            for label in unique_labels:
+                mask = labels == label
+                indices = torch.where(mask)[0]
+                if len(indices) >= 2:
+                    z_i_list.append(projections[indices[0]])
+                    z_j_list.append(projections[indices[1]])
 
-            # Handle odd batch sizes
-            min_size = min(z_i.shape[0], z_j.shape[0])
-            z_i = z_i[:min_size]
-            z_j = z_j[:min_size]
+            if len(z_i_list) == 0:
+                # Fallback: no valid pairs, return zero loss
+                return torch.tensor(0.0, device=projections.device, requires_grad=True)
+
+            z_i = torch.stack(z_i_list)
+            z_j = torch.stack(z_j_list)
 
             return self.criterion(z_i, z_j)
 
@@ -465,14 +477,24 @@ class Trainer:
             )
 
         elif self.config.loss.loss_type == "infonce":
-            # Use first glyph as query, second as positive key
-            batch_size = projections.shape[0]
-            mid = batch_size // 2
-            query = projections[:mid]
-            key = projections[mid:]
+            # Build positive pairs from same-font glyphs using labels.
+            unique_labels = labels.unique()
+            query_list = []
+            key_list = []
+            for label in unique_labels:
+                mask = labels == label
+                indices = torch.where(mask)[0]
+                if len(indices) >= 2:
+                    query_list.append(projections[indices[0]])
+                    key_list.append(projections[indices[1]])
 
-            min_size = min(query.shape[0], key.shape[0])
-            return self.criterion(query[:min_size], key[:min_size])
+            if len(query_list) == 0:
+                return torch.tensor(0.0, device=projections.device, requires_grad=True)
+
+            query = torch.stack(query_list)
+            key = torch.stack(key_list)
+
+            return self.criterion(query, key)
 
         else:
             raise ValueError(f"Unknown loss type: {self.config.loss.loss_type}")

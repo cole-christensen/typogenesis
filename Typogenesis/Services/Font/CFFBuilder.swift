@@ -44,6 +44,9 @@ struct CFFBuilder {
         // N1: Use shared nominalWidth source of truth
         let nomWidth = nominalWidth(for: project)
 
+        // --- Compute FontBBox from actual glyph bounding boxes ---
+        let fontBBox = computeFontBBox(glyphOrder: glyphOrder, metrics: project.metrics)
+
         // --- Pass 1: Build all sections except Top DICT to determine sizes ---
 
         let header = buildHeader()
@@ -75,6 +78,7 @@ struct CFFBuilder {
         for _ in 0..<3 {
             topDictData = buildTopDict(
                 project: project,
+                fontBBox: fontBBox,
                 charStringsOffset: charStringsOffset,
                 privateDictSize: privateDict.count,
                 privateDictOffset: privateDictOffset
@@ -89,6 +93,7 @@ struct CFFBuilder {
         // C5: Verify convergence — recompute with final offsets and confirm they match
         let verifyTopDict = buildTopDict(
             project: project,
+            fontBBox: fontBBox,
             charStringsOffset: charStringsOffset,
             privateDictSize: privateDict.count,
             privateDictOffset: privateDictOffset
@@ -123,6 +128,62 @@ struct CFFBuilder {
         cff.append(privateDict)
 
         return cff
+    }
+
+    // MARK: - FontBBox Computation
+
+    /// Compute the font bounding box from actual glyph outlines.
+    /// Falls back to metrics-based estimates if no glyphs have outlines.
+    private static func computeFontBBox(
+        glyphOrder: [(Character?, Glyph?)],
+        metrics: FontMetrics
+    ) -> (xMin: Int, yMin: Int, xMax: Int, yMax: Int) {
+        var xMin = Int.max
+        var yMin = Int.max
+        var xMax = Int.min
+        var yMax = Int.min
+        var hasPoints = false
+
+        for (_, glyph) in glyphOrder {
+            guard let glyph = glyph else { continue }
+            for contour in glyph.outline.contours {
+                for point in contour.points {
+                    hasPoints = true
+                    let px = Int(point.position.x)
+                    let py = Int(point.position.y)
+                    xMin = min(xMin, px)
+                    yMin = min(yMin, py)
+                    xMax = max(xMax, px)
+                    yMax = max(yMax, py)
+
+                    // Include control points in bounding box
+                    if let ctrlIn = point.controlIn {
+                        xMin = min(xMin, Int(ctrlIn.x))
+                        yMin = min(yMin, Int(ctrlIn.y))
+                        xMax = max(xMax, Int(ctrlIn.x))
+                        yMax = max(yMax, Int(ctrlIn.y))
+                    }
+                    if let ctrlOut = point.controlOut {
+                        xMin = min(xMin, Int(ctrlOut.x))
+                        yMin = min(yMin, Int(ctrlOut.y))
+                        xMax = max(xMax, Int(ctrlOut.x))
+                        yMax = max(yMax, Int(ctrlOut.y))
+                    }
+                }
+            }
+        }
+
+        if hasPoints {
+            return (xMin: xMin, yMin: yMin, xMax: xMax, yMax: yMax)
+        }
+
+        // Fallback to metrics-based estimate when no glyph outlines exist
+        return (
+            xMin: 0,
+            yMin: metrics.descender,
+            xMax: metrics.unitsPerEm,
+            yMax: metrics.ascender
+        )
     }
 
     // MARK: - CFF Header
@@ -217,6 +278,7 @@ struct CFFBuilder {
 
     private static func buildTopDict(
         project: FontProject,
+        fontBBox: (xMin: Int, yMin: Int, xMax: Int, yMax: Int),
         charStringsOffset: Int,
         privateDictSize: Int,
         privateDictOffset: Int
@@ -239,11 +301,11 @@ struct CFFBuilder {
         encodeDictNumber(&dict, value: 394)
         dict.append(4)  // Weight operator
 
-        // FontBBox
-        encodeDictNumber(&dict, value: 0)
-        encodeDictNumber(&dict, value: project.metrics.descender)
-        encodeDictNumber(&dict, value: project.metrics.unitsPerEm)
-        encodeDictNumber(&dict, value: project.metrics.ascender)
+        // FontBBox (computed from actual glyph bounding boxes)
+        encodeDictNumber(&dict, value: fontBBox.xMin)
+        encodeDictNumber(&dict, value: fontBBox.yMin)
+        encodeDictNumber(&dict, value: fontBBox.xMax)
+        encodeDictNumber(&dict, value: fontBBox.yMax)
         dict.append(5)  // FontBBox operator
 
         // charset offset (will be standard)
@@ -467,12 +529,14 @@ struct CFFBuilder {
         // but simplifies the encoder. A future optimization could set defaultWidthX to the
         // most common glyph width and omit the width operand for matching glyphs.
 
-        // defaultWidthX
+        // defaultWidthX (two-byte operator: 12 20)
         encodeDictNumber(&dict, value: nomWidth)
+        dict.append(12)  // escape byte for two-byte operator
         dict.append(20)  // defaultWidthX operator
 
-        // nominalWidthX
+        // nominalWidthX (two-byte operator: 12 21)
         encodeDictNumber(&dict, value: nomWidth)
+        dict.append(12)  // escape byte for two-byte operator
         dict.append(21)  // nominalWidthX operator
 
         return dict

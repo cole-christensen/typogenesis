@@ -160,6 +160,12 @@ final class GlyphGenerator: @unchecked Sendable {
         _generationStats.templateGenerations += 1
     }
 
+    private func recordFailed() {
+        statsLock.lock()
+        defer { statsLock.unlock() }
+        _generationStats.failedGenerations += 1
+    }
+
     /// Statistics about generation method usage
     struct GenerationStats {
         var aiGenerations: Int = 0
@@ -229,35 +235,40 @@ final class GlyphGenerator: @unchecked Sendable {
 
         let startTime = Date()
 
-        // Prepare conditioning based on mode
-        let conditioning = try prepareConditioning(
-            character: character,
-            mode: mode,
-            metrics: metrics
-        )
+        do {
+            // Prepare conditioning based on mode
+            let conditioning = try prepareConditioning(
+                character: character,
+                mode: mode,
+                metrics: metrics
+            )
 
-        // Generate latent representation
-        let outline = try await runDiffusion(
-            conditioning: conditioning,
-            settings: settings
-        )
+            // Generate latent representation
+            let outline = try await runDiffusion(
+                conditioning: conditioning,
+                settings: settings
+            )
 
-        // Create glyph
-        let bounds = outline.boundingBox
-        let glyph = Glyph(
-            character: character,
-            outline: outline,
-            advanceWidth: bounds.width + Int(CGFloat(metrics.unitsPerEm) * SpacingRatio.rightSideBearing),
-            leftSideBearing: Int(CGFloat(metrics.unitsPerEm) * SpacingRatio.leftSideBearing)
-        )
+            // Create glyph
+            let bounds = outline.boundingBox
+            let glyph = Glyph(
+                character: character,
+                outline: outline,
+                advanceWidth: bounds.width + Int(CGFloat(metrics.unitsPerEm) * SpacingRatio.rightSideBearing),
+                leftSideBearing: Int(CGFloat(metrics.unitsPerEm) * SpacingRatio.leftSideBearing)
+            )
 
-        let generationTime = Date().timeIntervalSince(startTime)
+            let generationTime = Date().timeIntervalSince(startTime)
 
-        return GenerationResult(
-            glyph: glyph,
-            confidence: ConfidenceScore.aiModel,
-            generationTime: generationTime
-        )
+            return GenerationResult(
+                glyph: glyph,
+                confidence: ConfidenceScore.aiModel,
+                generationTime: generationTime
+            )
+        } catch {
+            recordFailed()
+            throw error
+        }
     }
 
     /// Generate multiple glyphs for a character set
@@ -271,6 +282,7 @@ final class GlyphGenerator: @unchecked Sendable {
         var results: [GenerationResult] = []
 
         for (index, char) in characters.enumerated() {
+            try Task.checkCancellation()
             let result = try await generate(
                 character: char,
                 mode: mode,
@@ -357,6 +369,7 @@ final class GlyphGenerator: @unchecked Sendable {
             )
         } catch {
             // Model inference failed - fall back to template generation
+            recordFailed()
             print("[GlyphGenerator] Model inference failed: \(error.localizedDescription), falling back to template")
             return try await generatePlaceholder(
                 character: character,
@@ -890,13 +903,20 @@ final class GlyphGenerator: @unchecked Sendable {
                     type: t < 0.5 ? pointA.type : pointB.type
                 )
 
-                if let ciA = pointA.controlIn, let ciB = pointB.controlIn {
+                // Interpolate controlIn: if one side lacks a handle, use its on-curve position
+                let ciA = pointA.controlIn ?? pointA.position
+                let ciB = pointB.controlIn ?? pointB.position
+                if pointA.controlIn != nil || pointB.controlIn != nil {
                     newPoint.controlIn = CGPoint(
                         x: ciA.x * (1 - t) + ciB.x * t,
                         y: ciA.y * (1 - t) + ciB.y * t
                     )
                 }
-                if let coA = pointA.controlOut, let coB = pointB.controlOut {
+
+                // Interpolate controlOut: if one side lacks a handle, use its on-curve position
+                let coA = pointA.controlOut ?? pointA.position
+                let coB = pointB.controlOut ?? pointB.position
+                if pointA.controlOut != nil || pointB.controlOut != nil {
                     newPoint.controlOut = CGPoint(
                         x: coA.x * (1 - t) + coB.x * t,
                         y: coA.y * (1 - t) + coB.y * t

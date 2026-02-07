@@ -126,10 +126,21 @@ actor DesignSpaceExporter {
             var filename: String
             switch options.masterNamingStrategy {
             case .byMasterName:
-                // Sanitize master name for filename
+                // Sanitize master name for filename: remove/replace characters
+                // that are unsafe in filenames across macOS, Windows, and Linux
                 var safeName = master.name
-                    .replacingOccurrences(of: " ", with: "_")
-                    .replacingOccurrences(of: "/", with: "_")
+                safeName = safeName.unicodeScalars.map { scalar -> String in
+                    switch scalar {
+                    case "/", "\\", ":", "*", "?", "\"", "<", ">", "|", "\0":
+                        return "_"
+                    default:
+                        return String(scalar)
+                    }
+                }.joined()
+                // Replace spaces with underscores for readability
+                safeName = safeName.replacingOccurrences(of: " ", with: "_")
+                // Remove leading/trailing dots and whitespace (problematic on some OS)
+                safeName = safeName.trimmingCharacters(in: CharacterSet(charactersIn: ". \t"))
                 if safeName.isEmpty {
                     safeName = "Master_\(index)"
                 }

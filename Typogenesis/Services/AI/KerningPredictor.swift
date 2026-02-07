@@ -6,7 +6,12 @@ import CoreImage
 import os.log
 
 /// Service for predicting optimal kerning values using AI
-final class KerningPredictor {
+///
+/// ## Thread Safety
+/// This class conforms to `Sendable` because it has no mutable instance state.
+/// All instance properties are immutable (`let` constants), and all methods
+/// use only local variables or access shared state through `MainActor`.
+final class KerningPredictor: Sendable {
 
     /// Logger for tracking prediction method and fallback usage
     private static let logger = Logger(subsystem: "com.typogenesis", category: "KerningPredictor")
@@ -612,9 +617,11 @@ final class KerningPredictor {
         for i in 0..<sampleCount {
             let y = CGFloat(bounds.minY) + CGFloat(i) / CGFloat(sampleCount - 1) * CGFloat(bounds.height)
 
-            // Initialize to opposite extreme based on which side we're finding
-            var extremeX: CGFloat = side == .left ? CGFloat(bounds.maxX) : CGFloat(bounds.minX)
             let yTolerance = CGFloat(bounds.height) / CGFloat(sampleCount) * 1.5
+            // Initialize to opposite extreme so any real match overrides via min/max.
+            // When no points match, this value correctly indicates the glyph recedes
+            // at this scanline, producing a larger visual gap for kerning analysis.
+            var extremeX: CGFloat = side == .left ? CGFloat(bounds.maxX) : CGFloat(bounds.minX)
 
             for contour in outline.contours {
                 for point in contour.points {

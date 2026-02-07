@@ -93,8 +93,10 @@ class FlowMatchingSchedule:
         # Linear interpolation
         x_t = (1 - t) * x_0 + t * noise
 
-        # Add small amount of noise to avoid singular points
-        x_t = x_t + self.sigma_min * torch.randn_like(x_t)
+        # Add small amount of noise to avoid singular points, but only when t > 0
+        # At t=0, x_t should be exactly x_0 (clean data)
+        noise_mask = (t > 0).float()
+        x_t = x_t + noise_mask * self.sigma_min * torch.randn_like(x_t)
 
         return x_t
 

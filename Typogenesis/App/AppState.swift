@@ -186,6 +186,7 @@ final class AppState: ObservableObject {
             do {
                 let project = try await fontParser.parse(url: url)
                 currentProject = project
+                projectURL = nil
                 selectedGlyph = nil
                 addToRecentProjects(url)
                 isImporting = false

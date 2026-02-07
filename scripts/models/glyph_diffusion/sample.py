@@ -80,26 +80,36 @@ class GlyphSampler:
 
         # Load checkpoint
         logger.info(f"Loading checkpoint from {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=True)
 
-        # Reconstruct config
-        config_dict = checkpoint.get("config", {})
-        model_config = ModelConfig(**config_dict.get("model", {}))
-        flow_config = FlowMatchingConfig(**config_dict.get("flow_matching", {}))
+        # Handle both checkpoint formats: full training checkpoint vs bare state dict
+        if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+            # Full training checkpoint format
+            config_dict = checkpoint.get("config", {})
+            model_config = ModelConfig(**config_dict.get("model", {}))
+            flow_config = FlowMatchingConfig(**config_dict.get("flow_matching", {}))
 
-        # Create model
-        self.model = create_model(model_config).to(self.device)
+            # Create model
+            self.model = create_model(model_config).to(self.device)
 
-        # Load weights (EMA or regular)
-        if use_ema and "ema_state_dict" in checkpoint:
-            logger.info("Loading EMA weights")
-            ema_state = checkpoint["ema_state_dict"]
-            for name, param in self.model.named_parameters():
-                if name in ema_state["shadow"]:
-                    param.data.copy_(ema_state["shadow"][name])
+            # Load weights (EMA or regular)
+            if use_ema and "ema_state_dict" in checkpoint:
+                logger.info("Loading EMA weights")
+                ema_state = checkpoint["ema_state_dict"]
+                for name, param in self.model.named_parameters():
+                    if name in ema_state["shadow"]:
+                        param.data.copy_(ema_state["shadow"][name])
+            else:
+                logger.info("Loading regular weights")
+                self.model.load_state_dict(checkpoint["model_state_dict"])
         else:
-            logger.info("Loading regular weights")
-            self.model.load_state_dict(checkpoint["model_state_dict"])
+            # Bare state dict - use default config
+            logger.info("Loading bare state dict (no config found, using defaults)")
+            model_config = ModelConfig()
+            flow_config = FlowMatchingConfig()
+            self.model = create_model(model_config).to(self.device)
+            state_dict = checkpoint if not isinstance(checkpoint, dict) else checkpoint
+            self.model.load_state_dict(state_dict)
 
         self.model.eval()
 
