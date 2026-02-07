@@ -75,33 +75,33 @@ struct StyleEncoderIntegrationTests {
     func testModelStatusCheck() async {
         let status = ModelManager.shared.styleEncoderStatus
 
-        // Status should be a valid ModelStatus value - all enum cases are valid
-        // Just verify we can access it without crash
-        _ = status.displayText
-        #expect(true, "Status is accessible")
+        // Without loaded models, status should be notDownloaded
+        #expect(!status.isAvailable, "StyleEncoder should not be available without loaded models")
+        #expect(!status.displayText.isEmpty, "Status should have non-empty display text")
     }
 
     // MARK: - Embedding Extraction Tests
 
-    @Test("encodeGlyph returns embedding when model unavailable (fallback)")
-    func testEncodeGlyphFallback() async throws {
+    @Test("encodeGlyph throws modelNotLoaded without loaded model")
+    func testEncodeGlyphThrowsWithoutModel() async throws {
         let encoder = StyleEncoder()
         let glyph = createTestGlyph(character: "A")
 
-        // This should either succeed with model or throw modelNotLoaded
+        // Without a loaded CoreML model, encodeGlyph should throw StyleEncoderError
         do {
-            let embedding = try await encoder.encodeGlyph(glyph)
-
-            // If it succeeds, embedding should have correct dimension
-            #expect(embedding.count == 128, "Embedding should be 128 dimensions")
-
-            // All values should be finite
-            for value in embedding {
-                #expect(value.isFinite, "Embedding values should be finite")
-            }
+            _ = try await encoder.encodeGlyph(glyph)
+            Issue.record("encodeGlyph should throw when model is not loaded")
         } catch {
-            // Expected to throw if model not loaded
-            #expect(error is StyleEncoder.StyleEncoderError, "Should throw StyleEncoderError")
+            if let encoderError = error as? StyleEncoder.StyleEncoderError {
+                switch encoderError {
+                case .modelNotLoaded:
+                    break  // Expected: model is not loaded in test environment
+                case .invalidInput, .encodingFailed:
+                    Issue.record("Expected modelNotLoaded error, got \(encoderError)")
+                }
+            } else {
+                Issue.record("Expected StyleEncoderError.modelNotLoaded, got \(type(of: error)): \(error)")
+            }
         }
     }
 
@@ -121,16 +121,17 @@ struct StyleEncoderIntegrationTests {
         #expect(style.regularity >= 0 && style.regularity <= 1, "regularity should be 0-1")
     }
 
-    @Test("extractStyle identifies serif style")
+    @Test("extractStyle classifies square glyphs as sans-serif")
     func testSerifStyleClassification() async throws {
         let encoder = StyleEncoder()
+        // Test project uses simple square/rectangular glyphs (no serifs)
         let project = createTestProject(withCharacters: ["n", "H"])
 
         let style = try await encoder.extractStyle(from: project)
 
-        // Should return one of the valid serif styles
-        let validStyles = StyleEncoder.SerifStyle.allCases
-        #expect(validStyles.contains(style.serifStyle), "Should return valid serif style")
+        // Square glyphs should be classified as sans-serif (they have no serifs)
+        #expect(style.serifStyle == .sansSerif,
+                "Square glyphs should be classified as sans-serif, got \(style.serifStyle)")
     }
 
     // MARK: - Embedding Similarity Tests
@@ -383,8 +384,10 @@ struct StyleEncoderIntegrationTests {
 
         let style = try await encoder.extractStyle(from: project)
 
-        // Should not crash and return valid values
-        #expect(style.strokeWeight >= 0)
-        #expect(style.regularity >= 0)
+        // Should not crash and return values in the valid [0, 1] range
+        #expect(style.strokeWeight >= 0 && style.strokeWeight <= 1,
+                "strokeWeight should be in [0, 1] range, got \(style.strokeWeight)")
+        #expect(style.regularity >= 0 && style.regularity <= 1,
+                "regularity should be in [0, 1] range, got \(style.regularity)")
     }
 }

@@ -6,6 +6,18 @@ import Foundation
 @MainActor
 struct ModelManagerIntegrationTests {
 
+    // MARK: - Test Isolation
+
+    /// Reset ModelManager singleton state before each test.
+    /// Each @Test method creates a new struct instance, so this init
+    /// ensures consistent starting state (no model loaded).
+    init() {
+        let manager = ModelManager.shared
+        for modelType in ModelManager.ModelType.allCases {
+            manager.unloadModel(modelType)
+        }
+    }
+
     // MARK: - Helper Functions
 
     /// Check if a status is an error status
@@ -24,19 +36,15 @@ struct ModelManagerIntegrationTests {
         return false
     }
 
-    /// Check if status is valid (any defined status) - always true since it's an enum
-    private func isValidProcessedStatus(_ status: ModelManager.ModelStatus) -> Bool {
-        // Just access displayText to verify it's valid
-        _ = status.displayText
-        return true
-    }
+    // isValidProcessedStatus removed (B21): was dead code, never called, always returned true
 
     // MARK: - Model Discovery Tests
 
-    @Test("ModelManager singleton exists")
-    func testSingletonExists() {
-        let manager = ModelManager.shared
-        #expect(manager != nil, "ModelManager.shared should exist")
+    @Test("ModelManager singleton is consistent")
+    func testSingletonConsistent() {
+        let manager1 = ModelManager.shared
+        let manager2 = ModelManager.shared
+        #expect(manager1 === manager2, "ModelManager.shared should return the same instance")
     }
 
     @Test("All model types are defined")
@@ -67,20 +75,15 @@ struct ModelManagerIntegrationTests {
 
     // MARK: - Model Status Tests
 
-    @Test("Initial status is notDownloaded or error")
+    @Test("Initial status is notDownloaded without models")
     func testInitialStatus() {
         let manager = ModelManager.shared
 
         for modelType in ModelManager.ModelType.allCases {
             let status = manager.status(for: modelType)
 
-            // Should be notDownloaded or error (if storage failed) - or any valid status
-            let isValidStatus = status == .notDownloaded ||
-                                status == .downloaded ||
-                                status == .loaded ||
-                                isErrorStatus(status)
-
-            #expect(isValidStatus, "Status for \(modelType) should be valid, got \(status)")
+            // Without loaded models, initial status should be notDownloaded
+            #expect(status == .notDownloaded, "Initial status without models should be notDownloaded, got \(status) for \(modelType)")
         }
     }
 
@@ -141,21 +144,18 @@ struct ModelManagerIntegrationTests {
         #expect(isValidStatus, "Status after loading non-existent model should be notDownloaded or error")
     }
 
-    @Test("Load all models processes all types")
+    @Test("Load all models without model files stays notDownloaded or errors")
     func testLoadAllModels() async {
         let manager = ModelManager.shared
 
         await manager.loadAllModels()
 
-        // All models should have been processed
+        // Without model files, loadAllModels should leave status at notDownloaded or error
+        let validPostLoad: [ModelManager.ModelStatus] = [.notDownloaded]
         for modelType in ModelManager.ModelType.allCases {
             let status = manager.status(for: modelType)
-            // Should have some status set
-            let isValid = status == .notDownloaded ||
-                          status == .downloaded ||
-                          status == .loaded ||
-                          isErrorStatus(status)
-            #expect(isValid, "Status for \(modelType) should be valid")
+            #expect(validPostLoad.contains(status) || status.displayText.contains("Error"),
+                    "After loadAllModels without model files, status should be notDownloaded or error, got \(status) for \(modelType)")
         }
     }
 
@@ -165,18 +165,23 @@ struct ModelManagerIntegrationTests {
     func testModelAccessorsReturnNil() {
         let manager = ModelManager.shared
 
-        // Without loaded models, accessors should return nil
-        if manager.status(for: .glyphDiffusion) != .loaded {
-            #expect(manager.glyphDiffusion == nil)
-        }
+        // Without loaded models (no .mlmodelc files in test environment),
+        // all model accessors should return nil.
+        // We verify the status first to ensure the precondition holds.
+        #expect(manager.status(for: .glyphDiffusion) != .loaded,
+                "Test environment should not have loaded glyphDiffusion model")
+        #expect(manager.glyphDiffusion == nil,
+                "glyphDiffusion accessor should return nil when model is not loaded")
 
-        if manager.status(for: .styleEncoder) != .loaded {
-            #expect(manager.styleEncoder == nil)
-        }
+        #expect(manager.status(for: .styleEncoder) != .loaded,
+                "Test environment should not have loaded styleEncoder model")
+        #expect(manager.styleEncoder == nil,
+                "styleEncoder accessor should return nil when model is not loaded")
 
-        if manager.status(for: .kerningNet) != .loaded {
-            #expect(manager.kerningNet == nil)
-        }
+        #expect(manager.status(for: .kerningNet) != .loaded,
+                "Test environment should not have loaded kerningNet model")
+        #expect(manager.kerningNet == nil,
+                "kerningNet accessor should return nil when model is not loaded")
     }
 
     // MARK: - Download Tests
@@ -189,8 +194,8 @@ struct ModelManagerIntegrationTests {
         await manager.downloadModel(.styleEncoder)
 
         let status = manager.status(for: .styleEncoder)
-        if case .error = status {
-            #expect(true, "Download should set error status")
+        if case .error(let message) = status {
+            #expect(!message.isEmpty, "Error status should have a descriptive message")
         } else {
             // May also be notDownloaded if download was cancelled
             #expect(status == .notDownloaded)
@@ -198,25 +203,31 @@ struct ModelManagerIntegrationTests {
     }
 
     @Test("Cancel download resets status")
-    func testCancelDownload() async {
+    func testCancelDownload() async throws {
         let manager = ModelManager.shared
 
-        // Start a download (will immediately error since not implemented)
+        // Start a download
         Task {
             await manager.downloadModel(.kerningNet)
         }
 
+        // Give the download task time to start
+        try await Task.sleep(for: .milliseconds(100))
+
         // Cancel it
         manager.cancelDownload(.kerningNet)
 
-        // Status should be notDownloaded or error
+        // Give time for state to settle
+        try await Task.sleep(for: .milliseconds(100))
+
+        // Status should be notDownloaded or error - not stuck in downloading
         let status = manager.status(for: .kerningNet)
-        let isValidStatus = status == .notDownloaded || isErrorStatus(status)
-        #expect(isValidStatus, "Status should be notDownloaded or error")
+        #expect(status == .notDownloaded || isErrorStatus(status),
+                "Status should be notDownloaded or error after cancel, got \(status)")
     }
 
     @Test("Cancel all downloads works")
-    func testCancelAllDownloads() {
+    func testCancelAllDownloads() async throws {
         let manager = ModelManager.shared
 
         // Start downloads
@@ -226,11 +237,22 @@ struct ModelManagerIntegrationTests {
             }
         }
 
+        // Give download tasks time to start
+        try await Task.sleep(for: .milliseconds(100))
+
         // Cancel all
         manager.cancelAllDownloads()
 
-        // All should be cancelled
+        // Give time for state to settle
+        try await Task.sleep(for: .milliseconds(100))
+
+        // All should be cancelled - not stuck in downloading
         #expect(!manager.isLoading, "Should not be loading after cancel all")
+        for modelType in ModelManager.ModelType.allCases {
+            let status = manager.status(for: modelType)
+            #expect(status == .notDownloaded || isErrorStatus(status),
+                    "Status should be notDownloaded or error after cancel all, got \(status) for \(modelType)")
+        }
     }
 
     // MARK: - Unload Tests
@@ -266,17 +288,17 @@ struct ModelManagerIntegrationTests {
     func testAreAllModelsReady() {
         let manager = ModelManager.shared
 
-        // Without loaded models, should be false
-        #expect(!manager.areAllModelsReady || manager.areAllModelsReady,
-                "areAllModelsReady should return boolean")
+        // Without loaded models (no .mlmodelc files exist), should be false
+        #expect(!manager.areAllModelsReady,
+                "areAllModelsReady should be false when models are not loaded")
     }
 
     @Test("isLoading reflects current state")
     func testIsLoading() {
         let manager = ModelManager.shared
 
-        // Should return valid boolean
-        #expect(manager.isLoading == true || manager.isLoading == false)
+        // Before any async operations, should not be loading
+        #expect(!manager.isLoading, "Should not be loading in idle state")
     }
 
     @Test("statusSummary returns valid string")
@@ -335,7 +357,10 @@ struct ModelManagerIntegrationTests {
             }
         }
 
-        // Should not crash
-        #expect(true, "Concurrent access should not crash")
+        // Should complete without crash and return valid statuses
+        for modelType in ModelManager.ModelType.allCases {
+            let status = manager.status(for: modelType)
+            #expect(!status.displayText.isEmpty, "Status should have display text after concurrent access")
+        }
     }
 }

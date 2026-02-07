@@ -23,14 +23,14 @@ struct ImageProcessingTests {
         let binary = pixelData.toBinary(threshold: 128)
 
         // First row should be true (dark = foreground)
-        #expect(binary[0][0] == true)
-        #expect(binary[0][1] == true)
-        #expect(binary[0][2] == true)
-        #expect(binary[0][3] == true)
+        #expect(binary[0][0])
+        #expect(binary[0][1])
+        #expect(binary[0][2])
+        #expect(binary[0][3])
 
         // Second row should be false (light = background)
-        #expect(binary[1][0] == false)
-        #expect(binary[1][1] == false)
+        #expect(!binary[1][0])
+        #expect(!binary[1][1])
     }
 
     @Test("PixelData pixel access")
@@ -66,12 +66,14 @@ struct ImageProcessingTests {
         )
 
         #expect(bounds.count == 1)
-        if let first = bounds.first {
-            #expect(first.origin.x >= 3)
-            #expect(first.origin.y >= 3)
-            #expect(first.size.width >= 4)
-            #expect(first.size.height >= 4)
+        guard let first = bounds.first else {
+            Issue.record("Expected at least one bounding box but got none")
+            return
         }
+        #expect(first.origin.x >= 3)
+        #expect(first.origin.y >= 3)
+        #expect(first.size.width >= 4)
+        #expect(first.size.height >= 4)
     }
 
     // MARK: - EdgeDetector Tests
@@ -94,9 +96,11 @@ struct ImageProcessingTests {
         #expect(chains.count >= 1)
 
         // First chain should have points
-        if let first = chains.first {
-            #expect(first.points.count >= 4)  // At least 4 points for a square
+        guard let first = chains.first else {
+            Issue.record("Expected at least one edge chain but got none")
+            return
         }
+        #expect(first.points.count >= 4)  // At least 4 points for a square
     }
 
     @Test("Douglas-Peucker simplification reduces points")
@@ -165,10 +169,12 @@ struct ImageProcessingTests {
 
         #expect(contours.count >= 1)
 
-        if let first = contours.first {
-            #expect(first.points.count >= 4)
-            #expect(first.isClosed)
+        guard let first = contours.first else {
+            Issue.record("Expected at least one traced contour but got none")
+            return
         }
+        #expect(first.points.count >= 4)
+        #expect(first.isClosed)
     }
 
     @Test("toGlyphContour converts traced contour")
@@ -187,7 +193,7 @@ struct ImageProcessingTests {
         let glyphContour = tracedContour.toGlyphContour()
 
         #expect(glyphContour.points.count == 4)
-        #expect(glyphContour.isClosed == true)
+        #expect(glyphContour.isClosed)
 
         // All points should be corners
         for point in glyphContour.points {
@@ -214,11 +220,13 @@ struct ImageProcessingTests {
         // Should produce at least one segment
         #expect(segments.count >= 1)
 
-        if let first = segments.first {
-            // Start should be at origin
-            #expect(abs(first.start.x - 0) < 1)
-            #expect(abs(first.start.y - 0) < 1)
+        guard let first = segments.first else {
+            Issue.record("Expected at least one bezier segment but got none")
+            return
         }
+        // Start should be at origin
+        #expect(abs(first.start.x - 0) < 1)
+        #expect(abs(first.start.y - 0) < 1)
     }
 
     @Test("Fit bezier to curve")
@@ -259,10 +267,12 @@ struct ImageProcessingTests {
         #expect(pathPoints.count >= 2)  // At least start and end
 
         // First point should be at segment start
-        if let first = pathPoints.first {
-            #expect(abs(first.position.x - 0) < 1)
-            #expect(abs(first.position.y - 0) < 1)
+        guard let first = pathPoints.first else {
+            Issue.record("Expected at least one path point but got none")
+            return
         }
+        #expect(abs(first.position.x - 0) < 1)
+        #expect(abs(first.position.y - 0) < 1)
     }
 
     @Test("BezierSegment evaluation")
@@ -339,9 +349,11 @@ struct ImageProcessingTests {
         #expect(outline.contours.count >= 1)
 
         // Contour should have points
-        if let first = outline.contours.first {
-            #expect(first.points.count >= 4)
+        guard let first = outline.contours.first else {
+            Issue.record("Expected at least one contour from vectorization but got none")
+            return
         }
+        #expect(first.points.count >= 4)
     }
 
     enum VectorizerTestError: Error {

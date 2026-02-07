@@ -124,10 +124,11 @@ struct KerningNetIntegrationTests {
 
     // MARK: - Model Loading Tests
 
-    @Test("KerningPredictor is always available (geometric fallback)")
-    func testPredictorAlwaysAvailable() {
-        let predictor = KerningPredictor()
-        #expect(predictor.isAvailable, "Predictor should always be available due to geometric fallback")
+    @Test("KerningNet model is not available without loaded CoreML models")
+    @MainActor
+    func testModelNotAvailableWithoutModels() async {
+        let kerningModel = ModelManager.shared.kerningNet
+        #expect(kerningModel == nil, "KerningNet model should not be available without loaded CoreML models")
     }
 
     @Test("Model status can be checked")
@@ -135,27 +136,14 @@ struct KerningNetIntegrationTests {
     func testModelStatusCheck() async {
         let status = ModelManager.shared.kerningNetStatus
 
-        // Should be a valid status - just verify we can access it
-        _ = status.displayText
-        #expect(true, "Status is accessible")
+        // Without trained models, status should not be loaded/available
+        #expect(!status.isAvailable, "KerningNet model should not be available without trained models")
+        #expect(!status.displayText.isEmpty, "Status display text should not be empty")
     }
 
     // MARK: - Kerning Prediction Tests
 
-    @Test("AV pair should have negative kerning")
-    func testAVKerningNegative() async throws {
-        let predictor = KerningPredictor()
-        let project = createRealisticProject()
-
-        let kerning = try await predictor.predictPair(
-            left: "A",
-            right: "V",
-            project: project
-        )
-
-        // AV is a classic kerning pair that needs negative adjustment
-        #expect(kerning <= 0, "AV should have negative or zero kerning, got \(kerning)")
-    }
+    // testAVKerningNegative removed (C22): duplicates KerningPredictorTests.testPredictSinglePair
 
     @Test("Predict kerning returns valid result for existing pairs")
     func testPredictExistingPairs() async throws {
@@ -175,20 +163,7 @@ struct KerningNetIntegrationTests {
         #expect(result.predictionTime > 0, "Prediction time should be positive")
     }
 
-    @Test("Predict single pair returns 0 for missing glyph")
-    func testMissingGlyphReturnsZero() async throws {
-        let predictor = KerningPredictor()
-        let project = createTestProject(withCharacters: ["A"])
-
-        // "V" doesn't exist
-        let kerning = try await predictor.predictPair(
-            left: "A",
-            right: "V",
-            project: project
-        )
-
-        #expect(kerning == 0, "Missing glyph should return 0 kerning")
-    }
+    // testMissingGlyphReturnsZero removed (C22): duplicates KerningPredictorTests.testPredictPairWithMissingGlyph
 
     @Test("Kerning values are within reasonable range")
     func testKerningRange() async throws {
@@ -228,8 +203,9 @@ struct KerningNetIntegrationTests {
             settings: KerningPredictor.PredictionSettings(minKerningValue: 0) // Include all
         )
 
-        // Should process all pairs (may filter some based on value)
+        // Should process pairs and return at least some results
         #expect(results.count <= pairs.count, "Should not return more than input pairs")
+        #expect(results.count > 0, "Should return at least one kerning pair for known critical pairs")
     }
 
     @Test("Batch prediction is efficient")
@@ -267,9 +243,10 @@ struct KerningNetIntegrationTests {
         )
         let criticalResult = try await predictor.predictKerning(for: project, settings: criticalSettings)
 
-        // Critical only should analyze fewer pairs
-        #expect(criticalResult.predictionTime <= allResult.predictionTime * 2,
-                "Critical pairs should be faster or similar")
+        // Critical pairs mode should generate fewer or equal pairs than all-pairs mode
+        #expect(criticalResult.pairs.count <= allResult.pairs.count,
+                "Critical pairs mode should generate fewer or equal pairs than all-pairs mode")
+        #expect(criticalResult.pairs.count > 0, "Critical pairs should produce some pairs")
     }
 
     @Test("Minimum kerning value filters small adjustments")
@@ -288,7 +265,7 @@ struct KerningNetIntegrationTests {
                 "Higher threshold should filter more pairs")
     }
 
-    @Test("Spacing presets affect kerning values")
+    @Test("Spacing presets produce tighter kerning for tight vs loose")
     func testSpacingPresets() async throws {
         let predictor = KerningPredictor()
         let project = createRealisticProject()
@@ -296,9 +273,20 @@ struct KerningNetIntegrationTests {
         let tightResult = try await predictor.predictKerning(for: project, settings: .tight)
         let looseResult = try await predictor.predictKerning(for: project, settings: .loose)
 
-        // Both should complete successfully
-        #expect(tightResult.confidence >= 0)
-        #expect(looseResult.confidence >= 0)
+        // Both should produce pairs
+        #expect(!tightResult.pairs.isEmpty, "Tight preset should produce kerning pairs")
+        #expect(!looseResult.pairs.isEmpty, "Loose preset should produce kerning pairs")
+
+        // For each common pair, tight spacing should produce more negative (or equal) values
+        // compared to loose spacing. This is the core semantic guarantee of spacing presets.
+        for tightPair in tightResult.pairs {
+            if let loosePair = looseResult.pairs.first(where: {
+                $0.left == tightPair.left && $0.right == tightPair.right
+            }) {
+                #expect(tightPair.value <= loosePair.value,
+                    "Tight kerning should be <= loose for \(tightPair.left)\(tightPair.right): tight=\(tightPair.value) vs loose=\(loosePair.value)")
+            }
+        }
     }
 
     @Test("Include punctuation setting works")
@@ -356,39 +344,12 @@ struct KerningNetIntegrationTests {
 
     // MARK: - Error Handling Tests
 
-    @Test("Requires minimum glyphs")
-    func testMinimumGlyphsRequired() async throws {
-        let predictor = KerningPredictor()
-
-        // Empty project
-        let emptyProject = FontProject(name: "Empty", family: "Test", style: "Regular")
-        do {
-            _ = try await predictor.predictKerning(for: emptyProject)
-            Issue.record("Should throw insufficientGlyphs")
-        } catch {
-            #expect(error is KerningPredictor.PredictorError)
-        }
-
-        // Single glyph project
-        var singleProject = FontProject(name: "Single", family: "Test", style: "Regular")
-        singleProject.glyphs["A"] = Glyph(
-            character: "A",
-            outline: GlyphOutline(),
-            advanceWidth: 500,
-            leftSideBearing: 50
-        )
-        do {
-            _ = try await predictor.predictKerning(for: singleProject)
-            Issue.record("Should throw insufficientGlyphs")
-        } catch {
-            #expect(error is KerningPredictor.PredictorError)
-        }
-    }
+    // testMinimumGlyphsRequired removed (C22): duplicates KerningPredictorTests.testRequiresMinimumGlyphs
 
     // MARK: - Output Validation Tests
 
-    @Test("Output kerning units are integers")
-    func testKerningUnitsAreIntegers() async throws {
+    @Test("Output kerning values are in reasonable range")
+    func testKerningValuesInReasonableRange() async throws {
         let predictor = KerningPredictor()
         let project = createRealisticProject()
 
@@ -397,9 +358,11 @@ struct KerningNetIntegrationTests {
             settings: .default
         )
 
-        // All values should be valid integers (not NaN or infinity)
+        // All kerning values should be within reasonable bounds (not extreme)
+        let maxReasonable = project.metrics.unitsPerEm  // Should never exceed full em
         for pair in result.pairs {
-            #expect(pair.value == Int(exactly: pair.value), "Kerning should be exact integer")
+            #expect(abs(pair.value) <= maxReasonable,
+                    "Kerning value \(pair.value) for \(pair.left)-\(pair.right) exceeds reasonable range")
         }
     }
 
