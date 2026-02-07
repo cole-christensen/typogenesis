@@ -49,6 +49,7 @@ enum GenerationSource: String, Codable, Sendable {
     case aiGenerated
     case styleTransfer
     case imported
+    case placeholder  // Geometric placeholder - NOT AI generated
 }
 
 extension Character: @retroactive Codable {

@@ -41,7 +41,10 @@ struct GlyphCanvas: View {
     }
 
     private func makeTransform(size: CGSize) -> CGAffineTransform {
-        let baseScale = min(size.width, size.height) / CGFloat(metrics.unitsPerEm) * 0.7
+        // Guard against division by zero
+        let safeUnitsPerEm = max(CGFloat(metrics.unitsPerEm), 1)
+        let minDimension = max(min(size.width, size.height), 1)
+        let baseScale = minDimension / safeUnitsPerEm * 0.7
         let finalScale = baseScale * scale
 
         let centerX = size.width / 2 + offset.width

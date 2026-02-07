@@ -11,7 +11,7 @@ import CryptoKit
 ///
 /// Currently, all AI features fall back to geometric/placeholder generation.
 @MainActor
-final class ModelManager: ObservableObject, Sendable {
+final class ModelManager: ObservableObject {
     static let shared = ModelManager()
 
     // MARK: - Model Status
@@ -400,9 +400,8 @@ final class ModelManager: ObservableObject, Sendable {
         isPerformingOperation = true
 
         // Create and track the download task
-        let downloadTask = Task { @MainActor [weak self] in
-            guard let self = self else { return }
-
+        // No [weak self] needed: ModelManager.shared is a singleton that is never deallocated
+        let downloadTask = Task { @MainActor in
             var lastError: Error?
 
             for attempt in 1...self.maxRetries {
@@ -631,16 +630,20 @@ final class ModelManager: ObservableObject, Sendable {
         }
     }
 
-    /// Compute SHA256 checksum of a file
+    /// Compute SHA256 checksum of a file.
+    /// Uses a detached task to avoid blocking the MainActor with potentially large file reads.
     private func computeChecksum(for url: URL) async -> String {
-        do {
-            let data = try Data(contentsOf: url)
-            let hash = SHA256.hash(data: data)
-            return hash.compactMap { String(format: "%02x", $0) }.joined()
-        } catch {
-            print("[ModelManager] Could not compute checksum: \(error.localizedDescription)")
-            return ""
-        }
+        let capturedURL = url
+        return await Task.detached {
+            do {
+                let data = try Data(contentsOf: capturedURL)
+                let hash = SHA256.hash(data: data)
+                return hash.compactMap { String(format: "%02x", $0) }.joined()
+            } catch {
+                print("[ModelManager] Could not compute checksum: \(error.localizedDescription)")
+                return ""
+            }
+        }.value
     }
 
     /// Save version info for a model

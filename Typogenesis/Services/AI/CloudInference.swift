@@ -1,4 +1,39 @@
 import Foundation
+import os
+
+/// Module-level loggers for cloud inference actors (actors cannot have static stored properties)
+private let ollamaLogger = Logger(subsystem: "com.typogenesis", category: "OllamaProvider")
+private let huggingFaceLogger = Logger(subsystem: "com.typogenesis", category: "HuggingFaceProvider")
+private let cloudInferenceLogger = Logger(subsystem: "com.typogenesis", category: "CloudInference")
+
+// MARK: - Cloud Inference Infrastructure (Future)
+// =============================================================================
+//
+// STATUS: NOT INTEGRATED - Infrastructure for future versions
+//
+// This file contains infrastructure for cloud-based AI inference that is NOT
+// currently integrated into Typogenesis v1. The v1 release uses CoreML-only
+// inference (all models run locally on Apple Silicon).
+//
+// WHY THIS EXISTS:
+// - Provides a clean abstraction for future cloud provider integration
+// - Enables hybrid local/cloud inference when models become available
+// - Supports devices without capable Neural Engine
+// - Allows access to larger/more capable models than can run locally
+//
+// PROVIDERS (all stubbed):
+// - OllamaProvider: For local/self-hosted model inference (requires custom models)
+// - HuggingFaceProvider: For HuggingFace Inference API (requires deployed models)
+//
+// TO INTEGRATE IN FUTURE VERSIONS:
+// 1. Train and deploy font-generation models to Ollama/HuggingFace
+// 2. Wire CloudInferenceManager into GlyphGenerator, StyleEncoder, KerningPredictor
+// 3. Add Settings UI for cloud provider configuration
+// 4. Implement proper error handling and fallback logic
+//
+// DO NOT DELETE: This is valid infrastructure for post-v1 development.
+//
+// =============================================================================
 
 /// Protocol for cloud inference providers.
 ///
@@ -110,13 +145,17 @@ enum CloudInferenceError: Error, LocalizedError, Sendable {
 
 /// Ollama integration for local/self-hosted model inference.
 ///
-/// **HONEST STATUS:** This is a stub. Ollama support would require:
+/// - Important: NOT INTEGRATED in Typogenesis v1. This provider is stubbed infrastructure
+///   for future cloud inference support. All methods return `.failure(.modelNotAvailable)`.
+///
+/// **Requirements for future integration:**
 /// - Running Ollama server locally or on a network
 /// - Custom models fine-tuned for font generation (not currently available)
 /// - API integration for image/outline generation
 ///
 /// Ollama primarily supports text/chat models. Font generation would need
 /// custom fine-tuned vision/generation models that don't exist yet.
+// NOTE: This type compiles but is not wired into the app. Do not use in v1.
 actor OllamaProvider: CloudInferenceProvider {
     nonisolated let providerId = "ollama"
     nonisolated let displayName = "Ollama (Local)"
@@ -165,7 +204,7 @@ actor OllamaProvider: CloudInferenceProvider {
             }
             return .success((200...299).contains(httpResponse.statusCode))
         } catch {
-            print("[OllamaProvider] Health check failed: \(error.localizedDescription)")
+            ollamaLogger.warning("Health check failed: \(error.localizedDescription)")
             return .failure(.networkUnavailable)
         }
     }
@@ -177,7 +216,7 @@ actor OllamaProvider: CloudInferenceProvider {
     ) async -> CloudInferenceResult<GlyphOutline> {
         // STUB: Would call Ollama API with custom model
         // This would require a fine-tuned model for glyph generation
-        print("[OllamaProvider] generateGlyph called - NOT IMPLEMENTED")
+        ollamaLogger.debug("generateGlyph called - NOT IMPLEMENTED")
         return .failure(.modelNotAvailable("Glyph generation model not available for Ollama"))
     }
 
@@ -185,7 +224,7 @@ actor OllamaProvider: CloudInferenceProvider {
         from glyphs: [Glyph]
     ) async -> CloudInferenceResult<[Float]> {
         // STUB: Would call Ollama API with style encoder model
-        print("[OllamaProvider] encodeStyle called - NOT IMPLEMENTED")
+        ollamaLogger.debug("encodeStyle called - NOT IMPLEMENTED")
         return .failure(.modelNotAvailable("Style encoder model not available for Ollama"))
     }
 
@@ -195,7 +234,7 @@ actor OllamaProvider: CloudInferenceProvider {
         metrics: FontMetrics
     ) async -> CloudInferenceResult<Int> {
         // STUB: Would call Ollama API with kerning model
-        print("[OllamaProvider] predictKerning called - NOT IMPLEMENTED")
+        ollamaLogger.debug("predictKerning called - NOT IMPLEMENTED")
         return .failure(.modelNotAvailable("Kerning model not available for Ollama"))
     }
 }
@@ -204,13 +243,17 @@ actor OllamaProvider: CloudInferenceProvider {
 
 /// HuggingFace Inference API integration.
 ///
-/// **HONEST STATUS:** This is a stub. HuggingFace support would require:
+/// - Important: NOT INTEGRATED in Typogenesis v1. This provider is stubbed infrastructure
+///   for future cloud inference support. All methods return `.failure(.modelNotAvailable)`.
+///
+/// **Requirements for future integration:**
 /// - HuggingFace API key configuration
 /// - Custom models deployed to HuggingFace Hub
 /// - Models fine-tuned for font generation (not currently available)
 ///
 /// HuggingFace hosts many vision and generation models, but specific
 /// models for glyph/font generation would need to be trained and deployed.
+// NOTE: This type compiles but is not wired into the app. Do not use in v1.
 actor HuggingFaceProvider: CloudInferenceProvider {
     nonisolated let providerId = "huggingface"
     nonisolated let displayName = "HuggingFace"
@@ -286,7 +329,7 @@ actor HuggingFaceProvider: CloudInferenceProvider {
                 return .failure(.serverError(statusCode: httpResponse.statusCode, message: nil))
             }
         } catch {
-            print("[HuggingFaceProvider] Health check failed: \(error.localizedDescription)")
+            huggingFaceLogger.warning("Health check failed: \(error.localizedDescription)")
             return .failure(.networkUnavailable)
         }
     }
@@ -296,7 +339,7 @@ actor HuggingFaceProvider: CloudInferenceProvider {
         style: StyleEncoder.FontStyle,
         metrics: FontMetrics
     ) async -> CloudInferenceResult<GlyphOutline> {
-        guard let apiKey = apiKey else {
+        guard apiKey != nil else {
             return .failure(.notConfigured)
         }
 
@@ -305,15 +348,14 @@ actor HuggingFaceProvider: CloudInferenceProvider {
         }
 
         // STUB: Would call HuggingFace Inference API
-        print("[HuggingFaceProvider] generateGlyph called for model \(modelId) - NOT IMPLEMENTED")
-        _ = apiKey  // Acknowledge usage
+        huggingFaceLogger.debug("generateGlyph called for model \(modelId) - NOT IMPLEMENTED")
         return .failure(.modelNotAvailable("Glyph generation model not deployed to HuggingFace"))
     }
 
     func encodeStyle(
         from glyphs: [Glyph]
     ) async -> CloudInferenceResult<[Float]> {
-        guard let apiKey = apiKey else {
+        guard apiKey != nil else {
             return .failure(.notConfigured)
         }
 
@@ -322,8 +364,7 @@ actor HuggingFaceProvider: CloudInferenceProvider {
         }
 
         // STUB: Would call HuggingFace Inference API
-        print("[HuggingFaceProvider] encodeStyle called for model \(modelId) - NOT IMPLEMENTED")
-        _ = apiKey  // Acknowledge usage
+        huggingFaceLogger.debug("encodeStyle called for model \(modelId) - NOT IMPLEMENTED")
         return .failure(.modelNotAvailable("Style encoder model not deployed to HuggingFace"))
     }
 
@@ -332,7 +373,7 @@ actor HuggingFaceProvider: CloudInferenceProvider {
         right: Glyph,
         metrics: FontMetrics
     ) async -> CloudInferenceResult<Int> {
-        guard let apiKey = apiKey else {
+        guard apiKey != nil else {
             return .failure(.notConfigured)
         }
 
@@ -341,8 +382,7 @@ actor HuggingFaceProvider: CloudInferenceProvider {
         }
 
         // STUB: Would call HuggingFace Inference API
-        print("[HuggingFaceProvider] predictKerning called for model \(modelId) - NOT IMPLEMENTED")
-        _ = apiKey  // Acknowledge usage
+        huggingFaceLogger.debug("predictKerning called for model \(modelId) - NOT IMPLEMENTED")
         return .failure(.modelNotAvailable("Kerning model not deployed to HuggingFace"))
     }
 }
@@ -351,11 +391,18 @@ actor HuggingFaceProvider: CloudInferenceProvider {
 
 /// Manages cloud inference providers and fallback logic.
 ///
-/// **HONEST STATUS:** This manager exists for future extensibility.
-/// v1 of Typogenesis uses CoreML-only (local inference on Apple Silicon).
-/// Cloud providers are optional additions for future versions.
+/// - Important: NOT INTEGRATED in Typogenesis v1. This manager exists for future extensibility.
+///   v1 uses CoreML-only inference (local on Apple Silicon). Cloud providers are optional
+///   additions for future versions when suitable models become available.
+///
+/// **To integrate in future versions:**
+/// 1. Wire this manager into `GlyphGenerator`, `StyleEncoder`, `KerningPredictor`
+/// 2. Add Settings UI for cloud provider configuration (API keys, endpoints)
+/// 3. Implement proper model deployment for Ollama/HuggingFace
+/// 4. Replace stub implementations with actual API calls
+// NOTE: This type compiles but is not wired into the app. Do not use in v1.
 @MainActor
-final class CloudInferenceManager: ObservableObject, Sendable {
+final class CloudInferenceManager: ObservableObject {
     static let shared = CloudInferenceManager()
 
     /// Available providers
@@ -430,14 +477,14 @@ final class CloudInferenceManager: ObservableObject, Sendable {
             )
 
             if let outline = result.value {
-                print("[CloudInferenceManager] Used cloud provider \(provider.providerId) for glyph generation")
+                cloudInferenceLogger.debug("Used cloud provider \(provider.providerId) for glyph generation")
                 return outline
             }
 
             // Cloud failed - log and fall back to local
             if let error = result.error {
                 lastError = error
-                print("[CloudInferenceManager] Cloud inference failed: \(error.localizedDescription), falling back to local")
+                cloudInferenceLogger.warning("Cloud inference failed: \(error.localizedDescription), falling back to local")
             }
         }
 

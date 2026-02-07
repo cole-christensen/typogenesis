@@ -6,8 +6,8 @@ struct InteractiveGlyphCanvas: View {
 
     @State private var scale: CGFloat = 1.0
     @State private var offset: CGSize = .zero
-    @State private var showGrid = true
-    @State private var showMetrics = true
+    @AppStorage("showGrid") private var showGrid = true
+    @AppStorage("showMetrics") private var showMetrics = true
     @State private var showControlPoints = true
     @State private var currentDragHit: GlyphEditorViewModel.HitTestResult?
     @State private var lastDragPosition: CGPoint?
@@ -98,12 +98,22 @@ struct InteractiveGlyphCanvas: View {
         }
         .focusable()
         .focusEffectDisabled()
+        .alert("Path Operation Failed", isPresented: $viewModel.showOperationError) {
+            Button("OK", role: .cancel) {
+                viewModel.operationError = nil
+            }
+        } message: {
+            if let error = viewModel.operationError {
+                Text(error)
+            }
+        }
     }
 
     // MARK: - Transform
 
     private func makeTransform(size: CGSize) -> CGAffineTransform {
-        let baseScale = min(size.width, size.height) / CGFloat(metrics.unitsPerEm) * 0.7
+        let safeUnitsPerEm = max(CGFloat(metrics.unitsPerEm), 1)
+        let baseScale = min(size.width, size.height) / safeUnitsPerEm * 0.7
         let finalScale = baseScale * scale
 
         let centerX = size.width / 2 + offset.width
@@ -125,11 +135,20 @@ struct InteractiveGlyphCanvas: View {
 
     // MARK: - Gestures
 
+    /// Safely calculates the scale factor for screen-to-glyph conversions.
+    /// Guards against division by zero when size or unitsPerEm are zero.
+    private func safeScaleFactor(size: CGSize) -> CGFloat {
+        let minDimension = max(min(size.width, size.height), 1)
+        let safeUnitsPerEm = max(CGFloat(metrics.unitsPerEm), 1)
+        return scale * minDimension / safeUnitsPerEm * 0.7
+    }
+
     private func editingGesture(in size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
                 let glyphPoint = screenToGlyph(value.location, size: size)
-                let screenTolerance = hitTolerance / (scale * min(size.width, size.height) / CGFloat(metrics.unitsPerEm) * 0.7)
+                let scaleFactor = safeScaleFactor(size: size)
+                let screenTolerance = scaleFactor > 0 ? hitTolerance / scaleFactor : hitTolerance
 
                 switch viewModel.currentTool {
                 case .select:
@@ -146,7 +165,8 @@ struct InteractiveGlyphCanvas: View {
             }
             .onEnded { value in
                 let glyphPoint = screenToGlyph(value.location, size: size)
-                let screenTolerance = hitTolerance / (scale * min(size.width, size.height) / CGFloat(metrics.unitsPerEm) * 0.7)
+                let scaleFactor = safeScaleFactor(size: size)
+                let screenTolerance = scaleFactor > 0 ? hitTolerance / scaleFactor : hitTolerance
 
                 switch viewModel.currentTool {
                 case .select:
@@ -200,11 +220,16 @@ struct InteractiveGlyphCanvas: View {
             lastDragPosition = CGPoint(x: value.translation.width, y: value.translation.height)
 
             // Convert screen delta to glyph delta
-            let scaleFactor = scale * min(size.width, size.height) / CGFloat(metrics.unitsPerEm) * 0.7
-            let glyphDelta = CGSize(
-                width: deltaScreen.width / scaleFactor,
-                height: -deltaScreen.height / scaleFactor  // Y is inverted
-            )
+            let scaleFactor = safeScaleFactor(size: size)
+            let glyphDelta: CGSize
+            if scaleFactor > 0 {
+                glyphDelta = CGSize(
+                    width: deltaScreen.width / scaleFactor,
+                    height: -deltaScreen.height / scaleFactor  // Y is inverted
+                )
+            } else {
+                glyphDelta = .zero  // Can't convert if scale is invalid
+            }
 
             if let hit = currentDragHit {
                 switch hit {

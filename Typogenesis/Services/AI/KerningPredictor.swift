@@ -96,6 +96,12 @@ final class KerningPredictor {
         let confidence: Float
     }
 
+    /// Internal result from batch prediction that includes whether the model was used
+    private struct BatchResult {
+        let pairs: [KerningPair]
+        let usedModel: Bool
+    }
+
     // MARK: - Private Properties
 
     /// Critical kerning pairs that commonly need adjustment
@@ -145,51 +151,26 @@ final class KerningPredictor {
             getCriticalPairs(for: project) :
             getAllPairs(for: project, settings: settings)
 
-        var kerningPairs: [KerningPair] = []
-
-        let hasModel = await MainActor.run { ModelManager.shared.kerningNet != nil }
-        if hasModel {
-            // Use ML model for prediction
-            Self.logger.info("Using KerningNet model for \(pairs.count) pairs")
-            for (left, right) in pairs {
-                if let kerning = try await predictPairWithModel(
-                    left: left,
-                    right: right,
-                    project: project
-                ) {
-                    if abs(kerning) >= settings.minKerningValue {
-                        kerningPairs.append(KerningPair(left: left, right: right, value: kerning))
-                    }
-                }
-            }
-        } else {
-            // Use geometric heuristics
-            Self.logger.info("Using geometric fallback for kerning prediction - AI model not loaded (\(pairs.count) pairs)")
-            for (left, right) in pairs {
-                let kerning = calculateGeometricKerning(
-                    left: left,
-                    right: right,
-                    project: project,
-                    settings: settings
-                )
-
-                if abs(kerning) >= settings.minKerningValue {
-                    kerningPairs.append(KerningPair(left: left, right: right, value: kerning))
-                }
-            }
-        }
+        // Delegate to internal batch method which returns whether it used the model
+        let batchResult = try await predictBatchInternal(
+            pairs: pairs,
+            project: project,
+            settings: settings
+        )
 
         let predictionTime = Date().timeIntervalSince(startTime)
 
+        // Use the usedModel flag from the batch result instead of re-checking
+        // model availability (avoids TOCTOU race where model state could change)
         return PredictionResult(
-            pairs: kerningPairs,
+            pairs: batchResult.pairs,
             predictionTime: predictionTime,
-            confidence: hasModel ? Confidence.withModel : Confidence.geometric
+            confidence: batchResult.usedModel ? Confidence.withModel : Confidence.geometric
         )
     }
 
     /// Predict kerning for a single pair
-    func predictPair(
+    internal func predictPair(
         left: Character,
         right: Character,
         project: FontProject
@@ -239,10 +220,11 @@ final class KerningPredictor {
         for project: FontProject,
         settings: PredictionSettings
     ) -> [(Character, Character)] {
+        let maxPairs = 10000
         var pairs: [(Character, Character)] = []
         let characters = Array(project.glyphs.keys)
 
-        for left in characters {
+        outer: for left in characters {
             for right in characters {
                 // Skip if it's punctuation/numbers and those are disabled
                 let leftIsLetter = left.isLetter
@@ -263,6 +245,11 @@ final class KerningPredictor {
                 }
 
                 pairs.append((left, right))
+
+                // Enforce upper bound to prevent O(n^2) blowup on large glyph sets
+                if pairs.count >= maxPairs {
+                    break outer
+                }
             }
         }
 
@@ -342,6 +329,16 @@ final class KerningPredictor {
         project: FontProject,
         settings: PredictionSettings = .default
     ) async throws -> [KerningPair] {
+        let result = try await predictBatchInternal(pairs: pairs, project: project, settings: settings)
+        return result.pairs
+    }
+
+    /// Internal batch prediction that also reports whether the model was used
+    private func predictBatchInternal(
+        pairs: [(Character, Character)],
+        project: FontProject,
+        settings: PredictionSettings = .default
+    ) async throws -> BatchResult {
         guard project.glyphs.count >= 2 else {
             throw PredictorError.insufficientGlyphs
         }
@@ -350,16 +347,18 @@ final class KerningPredictor {
 
         if let kerningModel = model {
             // Use batch inference with model
-            return try await predictBatchWithModel(
+            let pairs = try await predictBatchWithModel(
                 pairs: pairs,
                 project: project,
                 model: kerningModel,
                 settings: settings
             )
+            return BatchResult(pairs: pairs, usedModel: true)
         } else {
             // Fall back to geometric calculation
             Self.logger.info("Using geometric fallback for batch prediction - AI model not loaded")
-            return predictBatchGeometric(pairs: pairs, project: project, settings: settings)
+            let pairs = predictBatchGeometric(pairs: pairs, project: project, settings: settings)
+            return BatchResult(pairs: pairs, usedModel: false)
         }
     }
 
@@ -515,10 +514,10 @@ final class KerningPredictor {
         }
 
         // Analyze right side of left glyph
-        let leftRightEdge = analyzeRightEdge(of: leftGlyph.outline, metrics: project.metrics)
+        let leftRightEdge = analyzeRightEdge(of: leftGlyph.outline)
 
         // Analyze left side of right glyph
-        let rightLeftEdge = analyzeLeftEdge(of: rightGlyph.outline, metrics: project.metrics)
+        let rightLeftEdge = analyzeLeftEdge(of: rightGlyph.outline)
 
         // Calculate optimal spacing adjustment
         let baseSpacing = CGFloat(project.metrics.unitsPerEm) * KerningParams.baseSpacingRatio
@@ -606,6 +605,10 @@ final class KerningPredictor {
             return EdgeProfile(positions: [])
         }
 
+        guard sampleCount > 1 else {
+            return EdgeProfile(positions: [])
+        }
+
         for i in 0..<sampleCount {
             let y = CGFloat(bounds.minY) + CGFloat(i) / CGFloat(sampleCount - 1) * CGFloat(bounds.height)
 
@@ -633,11 +636,11 @@ final class KerningPredictor {
     }
 
     // Convenience wrappers for clarity at call sites
-    private func analyzeRightEdge(of outline: GlyphOutline, metrics: FontMetrics) -> EdgeProfile {
+    private func analyzeRightEdge(of outline: GlyphOutline) -> EdgeProfile {
         analyzeEdge(of: outline, side: .right)
     }
 
-    private func analyzeLeftEdge(of outline: GlyphOutline, metrics: FontMetrics) -> EdgeProfile {
+    private func analyzeLeftEdge(of outline: GlyphOutline) -> EdgeProfile {
         analyzeEdge(of: outline, side: .left)
     }
 
@@ -724,29 +727,5 @@ final class KerningPredictor {
         context.fillPath()
 
         return context.makeImage()
-    }
-}
-
-// MARK: - CoreML Input Helper
-
-/// Input feature provider for the KerningNet model
-private class KerningNetInput: MLFeatureProvider {
-    let image: CVPixelBuffer
-
-    var featureNames: Set<String> {
-        ["image"]
-    }
-
-    func featureValue(for featureName: String) -> MLFeatureValue? {
-        switch featureName {
-        case "image":
-            return MLFeatureValue(pixelBuffer: image)
-        default:
-            return nil
-        }
-    }
-
-    init(image: CVPixelBuffer) {
-        self.image = image
     }
 }

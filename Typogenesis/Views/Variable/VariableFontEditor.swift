@@ -13,11 +13,11 @@ struct VariableFontEditor: View {
         HSplitView {
             // Left side: Configuration
             configurationPanel
-                .frame(minWidth: 300)
+                .layoutPriority(0)
 
-            // Right side: Preview
+            // Right side: Preview - expands to fill
             previewPanel
-                .frame(minWidth: 400)
+                .layoutPriority(1)
         }
         .accessibilityIdentifier(AccessibilityID.Variable.editor)
     }
@@ -347,6 +347,10 @@ struct VariableFontPreview: View {
 
     @State private var sampleText = "AaBbCc"
     @State private var fontSize: CGFloat = 72
+    @State private var interpolatedGlyphs: [Character: Glyph] = [:]
+    @State private var interpolationError: String?
+
+    private let interpolator = GlyphInterpolator()
 
     var body: some View {
         VStack(spacing: 16) {
@@ -365,6 +369,12 @@ struct VariableFontPreview: View {
 
                     interpolatedGlyphsView
                         .frame(height: fontSize * 1.5)
+
+                    if let error = interpolationError {
+                        Text(error)
+                            .font(.caption2)
+                            .foregroundColor(.orange)
+                    }
 
                     Divider()
 
@@ -400,6 +410,42 @@ struct VariableFontPreview: View {
             .padding()
             .background(Color(nsColor: .controlBackgroundColor))
         }
+        .task(id: InterpolationInput(location: location, sampleText: sampleText)) {
+            await updateInterpolatedGlyphs()
+        }
+    }
+
+    /// Triggers async interpolation via GlyphInterpolator for each character in sampleText.
+    private func updateInterpolatedGlyphs() async {
+        let config = project.variableConfig
+        guard config.masters.count >= 2,
+              !config.axes.isEmpty,
+              !location.isEmpty else {
+            // Not enough data for interpolation; fall back to project glyphs
+            interpolatedGlyphs = [:]
+            interpolationError = nil
+            return
+        }
+
+        var results: [Character: Glyph] = [:]
+        var errors: [String] = []
+
+        for char in Set(sampleText) {
+            do {
+                let glyph = try await interpolator.interpolate(
+                    character: char,
+                    at: location,
+                    in: project
+                )
+                results[char] = glyph
+            } catch {
+                // Not all characters may exist in masters; that's expected
+                errors.append("'\(char)': \(error.localizedDescription)")
+            }
+        }
+
+        interpolatedGlyphs = results
+        interpolationError = errors.isEmpty ? nil : "Some glyphs could not be interpolated"
     }
 
     @ViewBuilder
@@ -407,13 +453,14 @@ struct VariableFontPreview: View {
         Canvas { context, size in
             var xOffset: CGFloat = 20
             let baseline = size.height * 0.75
-            let scale = fontSize / CGFloat(project.metrics.unitsPerEm)
+            // Guard against division by zero
+            let safeUnitsPerEm = max(CGFloat(project.metrics.unitsPerEm), 1)
+            let scale = fontSize / safeUnitsPerEm
 
             for char in sampleText {
-                if let glyph = project.glyphs[char] {
-                    // Apply interpolation based on location
-                    let interpolatedGlyph = interpolateGlyph(glyph, at: location)
-                    let path = interpolatedGlyph.outline.cgPath
+                // Use interpolated glyph from GlyphInterpolator, fall back to project glyph
+                if let glyph = interpolatedGlyphs[char] ?? project.glyphs[char] {
+                    let path = glyph.outline.cgPath
 
                     var transform = CGAffineTransform.identity
                     transform = transform.translatedBy(x: xOffset, y: baseline)
@@ -423,7 +470,7 @@ struct VariableFontPreview: View {
                         context.fill(Path(transformedPath), with: .color(.primary))
                     }
 
-                    xOffset += CGFloat(interpolatedGlyph.advanceWidth) * scale
+                    xOffset += CGFloat(glyph.advanceWidth) * scale
                 } else if char == " " {
                     xOffset += fontSize * 0.3
                 }
@@ -436,7 +483,9 @@ struct VariableFontPreview: View {
         Canvas { context, size in
             var xOffset: CGFloat = 20
             let baseline = size.height * 0.75
-            let scale = (fontSize * 0.6) / CGFloat(master.metrics.unitsPerEm)
+            // Guard against division by zero
+            let safeMasterUnitsPerEm = max(CGFloat(master.metrics.unitsPerEm), 1)
+            let scale = (fontSize * 0.6) / safeMasterUnitsPerEm
 
             for char in sampleText {
                 if let glyph = master.glyphs[char] ?? project.glyphs[char] {
@@ -457,22 +506,12 @@ struct VariableFontPreview: View {
             }
         }
     }
+}
 
-    func interpolateGlyph(_ glyph: Glyph, at location: DesignSpaceLocation) -> Glyph {
-        // Simple weight-based interpolation for demonstration
-        guard let weightValue = location[VariationAxis.weightTag] else {
-            return glyph
-        }
-
-        // Simulate stroke weight change by scaling
-        let weightFactor = (weightValue - 400) / 300  // -1 to +1.67 range
-        var result = glyph
-
-        // Modify stroke appearance (simplified - real implementation would modify outline)
-        result.advanceWidth = Int(CGFloat(glyph.advanceWidth) * (1 + weightFactor * 0.1))
-
-        return result
-    }
+/// Hashable key for `.task(id:)` to re-trigger interpolation when inputs change.
+private struct InterpolationInput: Equatable, Hashable {
+    let location: DesignSpaceLocation
+    let sampleText: String
 }
 
 // MARK: - Add Axis Sheet
@@ -703,5 +742,4 @@ struct AddInstanceSheet: View {
 #Preview {
     VariableFontEditor()
         .environmentObject(AppState())
-        .frame(width: 900, height: 600)
 }

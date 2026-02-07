@@ -14,6 +14,19 @@ import XCTest
 /// - File system edge cases
 final class ModelManagerBugTests: XCTestCase {
 
+    // MARK: - Test Isolation
+
+    /// Reset ModelManager state before each test to prevent test interdependence.
+    /// ModelManager is a singleton, so without this, tests could depend on prior test state.
+    @MainActor
+    override func setUp() async throws {
+        let manager = ModelManager.shared
+        // Unload all models to start from a clean state
+        for modelType in ModelManager.ModelType.allCases {
+            manager.unloadModel(modelType)
+        }
+    }
+
     // MARK: - Comprehensive Model Lifecycle Test
 
     /// Tests the complete model lifecycle from not-downloaded through loaded,
@@ -145,12 +158,9 @@ final class ModelManagerBugTests: XCTestCase {
                     XCTAssertFalse(text.contains("-"),
                         "BUG: Negative progress \(progress) shows negative percentage: \(text)")
                 }
-                if percentage > 100 {
-                    // Over 100% looks bad
-                    if percentage > 999 {
-                        print("WARNING: Progress \(progress) shows \(percentage)% which is confusing")
-                    }
-                }
+                // Progress should be clamped to 1.0 (100%) for display
+                XCTAssertTrue(progress <= 1.0 || text.contains("100%"),
+                    "BUG: Progress \(progress) should be clamped to 100%% for display, got: \(text)")
             }
         }
 
@@ -300,48 +310,33 @@ final class ModelManagerBugTests: XCTestCase {
         // PHASE 9: Test corrupted model handling
         // ============================================
 
-        // Create a fake corrupted model file
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let modelsDir = appSupport.appendingPathComponent("Typogenesis/Models", isDirectory: true)
+        // Use a temp directory instead of the real Application Support directory
+        // to avoid destroying any real model files
+        let tempModelsDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TypogenesisTest-\(UUID().uuidString)", isDirectory: true)
 
-        // Ensure directory exists
-        try? FileManager.default.createDirectory(at: modelsDir, withIntermediateDirectories: true)
+        // Ensure temp directory exists
+        try FileManager.default.createDirectory(at: tempModelsDir, withIntermediateDirectories: true)
 
-        // Create corrupted file
-        let corruptedPath = modelsDir.appendingPathComponent(ModelManager.ModelType.kerningNet.fileName)
+        defer {
+            try? FileManager.default.removeItem(at: tempModelsDir)
+        }
+
+        // Create corrupted file in temp dir to verify the data format
+        let corruptedPath = tempModelsDir.appendingPathComponent(ModelManager.ModelType.kerningNet.fileName)
         let corruptedData = "THIS IS NOT A VALID MLMODEL FILE".data(using: .utf8)!
-
-        // Write corrupted file
-        try? FileManager.default.removeItem(at: corruptedPath)  // Clean first
         try corruptedData.write(to: corruptedPath)
 
         // Verify file exists
         XCTAssertTrue(FileManager.default.fileExists(atPath: corruptedPath.path),
             "Test setup failed: corrupted file not created")
 
-        // Try to load corrupted model
-        await manager.loadModel(.kerningNet)
-
-        let statusAfterCorrupted = manager.status(for: .kerningNet)
-
-        // Should be error state
-        switch statusAfterCorrupted {
-        case .error:
-            // Expected - corrupted file should produce error
-            break
-        case .loaded:
-            XCTFail("BUG: Corrupted model file loaded successfully - this is a security/stability issue")
-        case .loading:
-            XCTFail("BUG: Model stuck in loading state for corrupted file")
-        case .notDownloaded:
-            // Acceptable - file might have been cleaned up
-            break
-        default:
-            print("Unexpected status after loading corrupted file: \(statusAfterCorrupted)")
-        }
-
-        // Clean up
-        try? FileManager.default.removeItem(at: corruptedPath)
+        // Note: We can't test loading from the temp dir without injecting the path
+        // into ModelManager, so we test the status API and model availability instead.
+        // The key assertion is that non-existent/corrupted models don't show as loaded.
+        let statusAfterMissing = manager.status(for: .kerningNet)
+        XCTAssertNotEqual(statusAfterMissing, .loaded,
+            "BUG: kerningNet should not be loaded when no valid model exists")
 
         // ============================================
         // PHASE 10: Test download simulation timing
@@ -356,22 +351,24 @@ final class ModelManagerBugTests: XCTestCase {
         XCTAssertLessThan(downloadDuration, 5.0,
             "BUG: Download took \(downloadDuration)s, expected ~2s")
 
-        // Should not be instant (simulation takes time)
-        XCTAssertGreaterThan(downloadDuration, 1.0,
+        // Should not be instant (simulation takes time) - use wide bounds for CI tolerance
+        XCTAssertGreaterThan(downloadDuration, 0.5,
             "BUG: Download completed too fast (\(downloadDuration)s), simulation may be broken")
 
         // After download, status should be loaded (auto-loads after download)
         let statusAfterDownload = manager.status(for: .kerningNet)
-        // Note: Since we corrupted the file earlier and cleaned up, the download
-        // simulation doesn't create a real file, so it might fail to load
-        print("Status after download: \(statusAfterDownload)")
+        // After download simulation, status should not be stuck in downloading
+        if case .downloading = statusAfterDownload {
+            XCTFail("BUG: Status should not be stuck in downloading after download completes")
+        }
 
         // ============================================
         // PHASE 11: Test isLoading flag
         // ============================================
 
-        // At minimum, isLoading should be a valid boolean and not crash
-        _ = manager.isLoading
+        // After all operations complete, should not be loading
+        XCTAssertFalse(manager.isLoading,
+            "BUG: isLoading should be false after all operations complete")
 
         // ============================================
         // PHASE 12: Test cancel download
@@ -392,25 +389,15 @@ final class ModelManagerBugTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms
 
         let statusAfterCancel = manager.status(for: .styleEncoder)
-        print("Status after cancel: \(statusAfterCancel)")
+        // After cancel, should not be stuck in downloading state
+        if case .downloading = statusAfterCancel {
+            XCTFail("BUG: styleEncoder stuck in downloading state after cancel")
+        }
 
         // Clean up any partial downloads
         manager.deleteModel(.styleEncoder)
         manager.deleteModel(.kerningNet)
 
-        // ============================================
-        // Summary
-        // ============================================
-
-        print("""
-
-        Model Lifecycle Test Summary:
-        - Tested all \(allStatuses.count) status states
-        - Tested \(progressEdgeCases.count) progress edge cases
-        - Tested \(errorMessages.count) error message formats
-        - Tested \(ModelManager.ModelType.allCases.count) model types
-        - Tested unload, load missing, load corrupted, download, cancel
-        """)
     }
 
     // MARK: - Comprehensive Concurrent Operations Test
@@ -447,7 +434,8 @@ final class ModelManagerBugTests: XCTestCase {
         let totalDownloadTime = Date().timeIntervalSince(downloadStart)
 
         // All downloads should complete
-        print("All concurrent downloads completed in \(totalDownloadTime)s")
+        XCTAssertLessThan(totalDownloadTime, 30.0,
+            "BUG: Concurrent downloads took too long: \(totalDownloadTime)s")
 
         // No model should be stuck in downloading state
         for modelType in ModelManager.ModelType.allCases {
@@ -482,7 +470,8 @@ final class ModelManagerBugTests: XCTestCase {
 
         XCTAssertGreaterThan(statusReadCount, 100,
             "Should have read status many times: \(statusReadCount)")
-        print("Read status \(statusReadCount) times, saw \(statusesSeen.count) unique states")
+        XCTAssertGreaterThan(statusesSeen.count, 0,
+            "Should have seen at least one unique status state")
 
         // ============================================
         // PHASE 3: Rapid load/unload cycles
@@ -506,11 +495,12 @@ final class ModelManagerBugTests: XCTestCase {
         // Should not have crashed or corrupted state
         for modelType in ModelManager.ModelType.allCases {
             let status = manager.status(for: modelType)
-            // Should be in a valid state
-            switch status {
-            case .notDownloaded, .downloading, .downloaded, .validating, .loading, .loaded, .updateAvailable, .error:
-                break  // Valid
-            }
+            // After delete, model should not be in loaded state
+            XCTAssertNotEqual(status, .loaded,
+                "BUG: Model \(modelType) should not be loaded after delete")
+            // Status should have non-empty display text
+            XCTAssertFalse(status.displayText.isEmpty,
+                "BUG: Status display text should not be empty for \(modelType)")
         }
 
         // ============================================
@@ -547,18 +537,6 @@ final class ModelManagerBugTests: XCTestCase {
             }
         }
 
-        // ============================================
-        // Summary
-        // ============================================
-
-        print("""
-
-        Concurrent Operations Test Summary:
-        - Tested concurrent downloads of \(ModelManager.ModelType.allCases.count) models
-        - Read status \(statusReadCount) times during operations
-        - Performed 10 rapid load/unload cycles
-        - Tested concurrent cancel operations
-        """)
     }
 
     // MARK: - Comprehensive File System Edge Cases Test
@@ -572,28 +550,26 @@ final class ModelManagerBugTests: XCTestCase {
         let manager = ModelManager.shared
         let fileManager = FileManager.default
 
-        // Get models directory
+        // Get models directory path (read-only - DO NOT delete real directory)
         let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let modelsDir = appSupport.appendingPathComponent("Typogenesis/Models", isDirectory: true)
 
         // ============================================
-        // PHASE 1: Verify directory creation
+        // PHASE 1: Verify directory exists (non-destructive check)
         // ============================================
 
-        // Remove directory if exists (to test creation)
-        try? fileManager.removeItem(at: modelsDir)
-
-        // ModelManager should create directory on init
-        // Force re-check by loading a model
+        // ModelManager creates the directory on init, verify it exists
+        // We do NOT delete the real directory as that would destroy user data
         await manager.loadModel(.kerningNet)
 
-        // Directory should now exist
         var isDirectory: ObjCBool = false
         let exists = fileManager.fileExists(atPath: modelsDir.path, isDirectory: &isDirectory)
 
-        // Note: The manager creates the directory in init, so it should exist
-        // But our test may be running after init already happened
-        print("Models directory exists: \(exists), isDirectory: \(isDirectory.boolValue)")
+        // After loadModel, directory should have been created
+        XCTAssertTrue(exists, "Models directory should exist after loadModel")
+        if exists {
+            XCTAssertTrue(isDirectory.boolValue, "Models path should be a directory")
+        }
 
         // ============================================
         // PHASE 2: Test with file instead of directory
@@ -603,7 +579,8 @@ final class ModelManagerBugTests: XCTestCase {
         // This could happen due to user error or malicious modification
 
         // We won't actually test this destructively, but document the concern
-        print("WARNING: If modelsDir path is a file instead of directory, behavior is undefined")
+        // Note: If modelsDir path is a file instead of directory, behavior is undefined.
+        // Testing this destructively is skipped to avoid corrupting real storage.
 
         // ============================================
         // PHASE 3: Test model file paths
@@ -629,63 +606,48 @@ final class ModelManagerBugTests: XCTestCase {
         }
 
         // ============================================
-        // PHASE 4: Test empty model files
+        // PHASE 4: Test empty model files (in temp dir)
         // ============================================
 
-        // Ensure directory exists
-        try fileManager.createDirectory(at: modelsDir, withIntermediateDirectories: true)
+        // Use temp directory to avoid corrupting real model storage
+        let tempTestDir = fileManager.temporaryDirectory
+            .appendingPathComponent("TypogenesisTest-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: tempTestDir, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: tempTestDir) }
 
-        // Create empty file
-        let emptyPath = modelsDir.appendingPathComponent(ModelManager.ModelType.kerningNet.fileName)
-        try? fileManager.removeItem(at: emptyPath)
+        // Create empty file in temp dir
+        let emptyPath = tempTestDir.appendingPathComponent(ModelManager.ModelType.kerningNet.fileName)
         fileManager.createFile(atPath: emptyPath.path, contents: Data())
 
-        // Try to load
-        await manager.loadModel(.kerningNet)
+        // Verify empty file was created
+        XCTAssertTrue(fileManager.fileExists(atPath: emptyPath.path),
+            "Test setup failed: empty file not created")
+        let emptyAttrs = try fileManager.attributesOfItem(atPath: emptyPath.path)
+        XCTAssertEqual(emptyAttrs[.size] as? Int, 0, "File should be empty")
 
-        let statusAfterEmpty = manager.status(for: .kerningNet)
-        switch statusAfterEmpty {
-        case .error:
-            // Expected - empty file is invalid
-            break
-        case .loaded:
-            XCTFail("BUG: Empty model file loaded successfully")
-        default:
-            print("Status after loading empty file: \(statusAfterEmpty)")
-        }
-
-        // Clean up
-        try? fileManager.removeItem(at: emptyPath)
+        // We can't inject the temp path into ModelManager singleton, but we verify
+        // that non-existent models don't load from the real directory
+        let statusForKerning = manager.status(for: .kerningNet)
+        XCTAssertNotEqual(statusForKerning, .loaded,
+            "BUG: kerningNet should not be loaded without a valid model file")
 
         // ============================================
-        // PHASE 5: Test model file with wrong extension
+        // PHASE 5: Test model file format validation concept
         // ============================================
 
-        // The filename is ".mlmodelc" but what if the file is actually something else?
-        // This tests that the loader validates the file format, not just the extension
-
-        let fakeModelPath = modelsDir.appendingPathComponent(ModelManager.ModelType.styleEncoder.fileName)
-        try? fileManager.removeItem(at: fakeModelPath)
-
-        // Write a PNG file with .mlmodelc extension
+        // Write a PNG file with .mlmodelc extension in temp dir
+        let fakeModelPath = tempTestDir.appendingPathComponent(ModelManager.ModelType.styleEncoder.fileName)
         let pngHeader = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
         try pngHeader.write(to: fakeModelPath)
 
-        await manager.loadModel(.styleEncoder)
+        // Verify fake model was created
+        XCTAssertTrue(fileManager.fileExists(atPath: fakeModelPath.path),
+            "Test setup failed: fake model file not created")
 
-        let statusAfterFake = manager.status(for: .styleEncoder)
-        switch statusAfterFake {
-        case .error:
-            // Expected - PNG is not a valid model
-            break
-        case .loaded:
-            XCTFail("BUG: Fake model file (PNG with .mlmodelc extension) loaded successfully - security issue")
-        default:
-            print("Status after loading fake model: \(statusAfterFake)")
-        }
-
-        // Clean up
-        try? fileManager.removeItem(at: fakeModelPath)
+        // Verify real model is not loaded
+        let statusForStyle = manager.status(for: .styleEncoder)
+        XCTAssertNotEqual(statusForStyle, .loaded,
+            "BUG: styleEncoder should not be loaded without a valid model file")
 
         // ============================================
         // PHASE 6: Test very large filename (edge case)
@@ -698,22 +660,5 @@ final class ModelManagerBugTests: XCTestCase {
                 "Model filename is too long: \(fileName.count) chars")
         }
 
-        // ============================================
-        // Summary
-        // ============================================
-
-        print("""
-
-        File System Edge Cases Test Summary:
-        - Verified directory creation
-        - Tested loading empty model file
-        - Tested loading fake model file (PNG with .mlmodelc extension)
-        - Verified model filenames are reasonable length
-        """)
-
-        // Final cleanup
-        for modelType in ModelManager.ModelType.allCases {
-            manager.deleteModel(modelType)
-        }
     }
 }

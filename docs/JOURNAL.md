@@ -1486,3 +1486,504 @@ Only one issue remains open:
 - Add variable font support for OTF export (CFF2)
 - WOFF2 compression with Brotli
 - Phase 6: Polish and App Store preparation
+
+## 2025-12-14: Bug Hunt - 25 Bugs Found
+
+### Summary
+Conducted comprehensive bug hunt focusing on UI side panes, resizing, overflow, and AI model management. Used experimental TDD approach: write tests that find bugs, delete tests that pass, keep only failing tests.
+
+### Test Files Created
+- `TypogenesisTests/UILayoutBugTests.swift` - Layout constraint validation
+- `TypogenesisTests/ModelManagerBugTests.swift` - AI model management bugs
+- `TypogenesisUITests/SidePaneResizingUITests.swift` - UI interaction tests
+
+### 25 Bugs Found
+
+#### Category 1: Layout Constraint Conflicts (7 bugs)
+
+| # | Bug | Location | Details |
+|---|-----|----------|---------|
+| 1 | Content exceeds window minimum | MainWindow | With max sidebar (280px), content (1060px) exceeds window minimum (1000px) |
+| 2 | VariableFontEditor min conflict | VariableFontEditor.swift | Requires 700px but content only guarantees 500px |
+| 3 | AddGlyphSheet too small | AddGlyphSheet | Height (350px) too small for Basic Latin grid (504px) |
+| 4 | VariableFontEditor constraint | VariableFontEditor.swift | left(300) + right(400) = 700 > container(500) |
+| 5 | Hardcoded layout conflicts | VariableFontEditor.swift:16,20 | Multiple frames with only minWidth cause layout thrashing |
+| 6 | Negative frame potential | MetricsEditor.swift:266-270 | If ascender > baselineY, y-coordinate becomes negative |
+| 7 | Grid columns on ultrawide | GlyphGrid.swift | Could create excessive columns on ultrawide displays |
+
+#### Category 2: Division by Zero Vulnerabilities (12 bugs)
+
+| # | Bug | Location | Divisor |
+|---|-----|----------|---------|
+| 8 | Unguarded division | InteractiveGlyphCanvas.swift:132 | metrics.unitsPerEm |
+| 9 | Compound division | InteractiveGlyphCanvas.swift:203 | scaleFactor (compound) |
+| 10 | Base scale division | GlyphCanvas.swift:44 | metrics.unitsPerEm |
+| 11 | Preview scale | GenerateView.swift:410 | project.metrics.unitsPerEm |
+| 12 | Bounds width | GenerateView.swift:617 | bounds.width |
+| 13 | Bounds height | GenerateView.swift:618 | bounds.height |
+| 14 | Kerning preview | KerningEditor.swift:358 | project.metrics.unitsPerEm |
+| 15 | Font preview | FontPreviewPanel.swift:227 | project.metrics.unitsPerEm |
+| 16 | Variable preview 1 | VariableFontEditor.swift:410 | project.metrics.unitsPerEm |
+| 17 | Variable preview 2 | VariableFontEditor.swift:439 | master.metrics.unitsPerEm |
+| 18 | Image scale width | HandwritingScanner.swift:784 | imageSize.width |
+| 19 | Image scale height | HandwritingScanner.swift:784 | imageSize.height |
+
+#### Category 3: ModelManager Bugs (3 bugs)
+
+| # | Bug | Location | Details |
+|---|-----|----------|---------|
+| 20 | Negative progress | ModelManager.swift | Shows "Downloading -100%" for progress = -1.0 |
+| 21 | Int conversion crash | ModelManager.swift | Fatal error: Double cannot be converted to Int (infinite/NaN) |
+| 22 | Range error crash | ModelManager | Fatal error: Range requires lowerBound <= upperBound |
+
+#### Category 4: UI Edge Cases (3 bugs)
+
+| # | Bug | Location | Details |
+|---|-----|----------|---------|
+| 23 | Export sheet missing options | ExportSheet.swift | Export sheet has no format options (count = 0) |
+| 24 | Zero GeometryReader size | GlyphGrid.swift | Zero-sized frame produces zero scale, collapsing views |
+| 25 | Negative scale inversion | Various views | Negative unitsPerEm produces negative scale, inverting glyphs |
+
+### Tests That Find Bugs (Kept)
+
+| Test | Bugs Found |
+|------|------------|
+| `testLayoutConstraintsAreInternallyConsistent` | #1, #2, #3, #7 |
+| `testSplitViewExtremePositions` | #4 |
+| `testDivisionByZeroInMetricsScaling` | #8-19, #24, #25 |
+| `testCompleteModelLifecycle` | #20, #21, #22 |
+| `testComprehensiveSidebarNavigationAndResizing` | #22, #23 |
+
+### Tests That Passed (Deleted)
+
+- `testTextContentHandlingAcrossApp` - Data model edge cases, no bugs
+- `testGeometryReaderEdgeCases` - Scaling calculations, no bugs (kept as documentation)
+- `testConcurrentModelOperations` - Thread safety, no bugs found
+- `testFileSystemEdgeCases` - File system handling, no bugs found
+- `testComprehensiveSplitViewDividerDragging` - Divider dragging, no bugs
+- `testComprehensiveContentOverflowAndClipping` - Content overflow, no bugs
+
+### Recommended Fixes
+
+1. **Division by Zero**: Add guards for unitsPerEm > 0 at start of all scaling calculations
+2. **Layout Conflicts**: Audit all split views to ensure leftMin + rightMin <= containerMin
+3. **ModelManager**: Validate progress values before display (clamp to 0.0...1.0)
+4. **GeometryReader**: Add guards for zero-sized frames before calculating scales
+5. **Negative Values**: Validate metrics on import/creation (unitsPerEm > 0, reasonable ranges)
+
+### Test Results
+
+| Category | Passing | Failing | Total |
+|----------|---------|---------|-------|
+| UILayoutBugTests | 1 | 3 | 4 |
+| ModelManagerBugTests | 2 | 1* | 3 |
+| SidePaneResizingUITests | 1 | 2 | 3 |
+
+*One test crashes before completing (finds bugs via crash)
+
+### Next Steps
+1. Create GitHub issues for each bug category
+2. Fix division by zero vulnerabilities first (crash risk)
+3. Fix layout constraint conflicts
+4. Add input validation for metrics
+
+## 2026-01-20: Code Quality Improvements
+
+### Summary
+Addressed multiple code quality issues identified in the "Hall of Shame" analysis. All 400 unit tests pass after changes.
+
+### Improvements Made
+
+#### 1. Honest AI Generation
+- **File**: `GlyphGenerator.swift`
+- Removed fake `Task.sleep()` delays that pretended AI was processing
+- Added 45-line documentation explaining what real AI implementation would require
+- Made generation instant instead of deceptively slow
+- Confidence now honestly reports 0.0 for template generation (was misleadingly higher)
+
+#### 2. Fixed String-Based Tests
+- **File**: `UILayoutBugTests.swift`
+- Removed `testLayoutIsContentDriven()` which read source code and checked for string patterns
+- Replaced with `testLayoutTypesExist()` that verifies actual behavior (enum cases, navigation)
+
+#### 3. Fixed Silent Error Swallowing
+Fixed 5 locations where `try?` silently swallowed errors:
+
+| File | Issue | Fix |
+|------|-------|-----|
+| `ModelManager.swift:init` | Directory creation | Log + set error status |
+| `ModelManager.swift:retry` | Sleep cancellation | Propagate cancellation |
+| `ModelManager.swift:delete` | File deletion | Handle file-not-found vs errors |
+| `GlyphInterpolator.swift` | Interpolation failures | Log failed characters |
+| `StyleEncoder.swift` | Encoding failures | Log encoding failures |
+
+#### 4. Refactored Duplicate Code
+- **File**: `KerningPredictor.swift`
+- Merged `analyzeLeftEdge()` and `analyzeRightEdge()` into single `analyzeEdge(of:side:)` method
+- Reduced 50 duplicate lines to single parameterized function
+
+#### 5. Fixed UI Test Crashes
+- **File**: `SidePaneResizingUITests.swift`
+- Fixed "Range requires lowerBound <= upperBound" crash by guarding against `startIndex >= count`
+- Fixed checkbox assertion by updating test to match actual export sheet UI (uses buttons, not checkboxes)
+
+#### 6. Extracted Magic Numbers
+Added named constants to replace unexplained numeric literals:
+
+**KerningPredictor.swift**:
+```swift
+private enum Confidence {
+    static let withModel: Float = 0.85
+    static let geometric: Float = 0.6
+}
+private enum KerningParams {
+    static let baseSpacingRatio: CGFloat = 0.1
+    static let maxKerningDivisor: CGFloat = 4.0
+    static let edgeSampleCount: Int = 20
+}
+private enum RenderParams {
+    static let imageSize: Int = 128
+    static let scaleFactor: CGFloat = 0.8
+    static let baselineRatio: CGFloat = 0.7
+}
+```
+
+**GlyphGenerator.swift**:
+```swift
+private enum SpacingRatio {
+    static let leftSideBearing: CGFloat = 0.1
+    static let rightSideBearing: CGFloat = 0.2
+    static let minAdvanceWidth: CGFloat = 0.5
+}
+private enum ConfidenceScore {
+    static let aiModel: Float = 0.9
+    static let placeholder: Float = 0.0
+}
+private enum PlaceholderParams {
+    static let punctuationHeight: CGFloat = 0.5
+    static let margin: CGFloat = 0.05
+    static let strokeWidth: CGFloat = 0.04
+    static let variationScale: Double = 0.1
+}
+```
+
+### Test Results
+- **Unit Tests**: 400 tests, 69 suites - ALL PASS
+- **UI Tests**: ALL PASS (previously had Range crash)
+
+### Files Modified
+- `Typogenesis/Services/AI/GlyphGenerator.swift`
+- `Typogenesis/Services/AI/KerningPredictor.swift`
+- `Typogenesis/Services/AI/ModelManager.swift`
+- `Typogenesis/Services/AI/StyleEncoder.swift`
+- `Typogenesis/Services/Font/GlyphInterpolator.swift`
+- `TypogenesisTests/UILayoutBugTests.swift`
+- `TypogenesisUITests/SidePaneResizingUITests.swift`
+
+## 2026-01-20: Additional Code Quality Improvements (Continued)
+
+### Summary
+Continued code quality improvements, focusing on magic number extraction, unused imports, and code duplication.
+
+### Improvements Made
+
+#### 7. Extracted Magic Numbers from StrokeBuilder.swift
+Added named constants for stroke dimensions and curve parameters:
+
+```swift
+private enum StrokeDimensions {
+    static let baseWidthRatio: CGFloat = 0.08      // 8% of em
+    static let sideBearingRatio: CGFloat = 0.08   // 8% of em
+    static let weightOffset: CGFloat = 0.5        // Minimum thickness offset
+}
+
+private enum CurveParams {
+    static let sampleCount: Int = 10                      // Centerline samples
+    static let roundnessThreshold: CGFloat = 0.5          // Point type threshold
+    static let quadToCubicFactor: CGFloat = 2.0 / 3.0     // Bezier conversion
+    static let contrastScale: CGFloat = 0.5               // H/V stroke variation
+    static let handleLengthFactor: CGFloat = 0.3          // Curve handle scaling
+    static let deduplicationThreshold: CGFloat = 0.5      // Point dedup distance
+}
+```
+
+#### 8. Extracted Bezier Circle Constant from GlyphTemplates.swift
+Added documented constant for bezier circle approximation:
+
+```swift
+/// Mathematical constant for bezier circle approximation.
+/// Calculated as 4 * (sqrt(2) - 1) / 3 ≈ 0.5522847498.
+private let kBezierCircleApproximation: CGFloat = 0.5523
+```
+
+This constant was previously duplicated in `ellipse()` and `bowl()` methods.
+
+#### 9. Removed Unused CoreML Imports
+Removed `import CoreML` from files that don't use CoreML types:
+
+| File | CoreML Usage | Action |
+|------|-------------|--------|
+| `ModelManager.swift` | Uses MLModel, MLModelConfiguration | Kept |
+| `GlyphGenerator.swift` | None | **Removed** |
+| `KerningPredictor.swift` | None | **Removed** |
+| `StyleEncoder.swift` | None | **Removed** |
+
+#### 10. Refactored Boolean Path Operations
+**File**: `GlyphEditorViewModel.swift`
+
+Reduced 4 nearly identical methods (~120 lines) to 1 parameterized method + 4 one-liners:
+
+**Before** (4 separate methods, ~30 lines each):
+```swift
+func unionSelectedContours() { /* 30 lines */ }
+func subtractSelectedContours() { /* 25 lines */ }
+func intersectSelectedContours() { /* 30 lines */ }
+func xorSelectedContours() { /* 30 lines */ }
+```
+
+**After** (1 helper + 4 wrappers):
+```swift
+private func performBooleanOperation(
+    _ operation: PathOperations.Operation,
+    requireExactlyTwo: Bool = false
+) { /* ~35 lines of shared logic */ }
+
+func unionSelectedContours() { performBooleanOperation(.union) }
+func subtractSelectedContours() { performBooleanOperation(.subtract, requireExactlyTwo: true) }
+func intersectSelectedContours() { performBooleanOperation(.intersect) }
+func xorSelectedContours() { performBooleanOperation(.xor) }
+```
+
+Also added `displayName` property to `PathOperations.Operation` enum for error messages.
+
+### Test Results
+- **Unit Tests**: 400 tests pass
+- **Build**: Clean compilation with no warnings
+
+### Files Modified (This Session)
+- `Typogenesis/Services/AI/StrokeBuilder.swift` - Magic number extraction
+- `Typogenesis/Services/AI/GlyphTemplates.swift` - Bezier constant extraction
+- `Typogenesis/Services/AI/GlyphGenerator.swift` - Removed unused CoreML import
+- `Typogenesis/Services/AI/KerningPredictor.swift` - Removed unused CoreML import
+- `Typogenesis/Services/AI/StyleEncoder.swift` - Removed unused CoreML import
+- `Typogenesis/ViewModels/GlyphEditorViewModel.swift` - Boolean operation refactoring
+- `Typogenesis/Services/Path/PathOperations.swift` - Added displayName property
+
+#### 11. Refactored Control Handle Mirroring
+**File**: `GlyphEditorViewModel.swift`
+
+Extracted symmetric control handle mirroring logic into a single parameterized helper:
+
+**Before** (duplicated in `moveControlIn` and `moveControlOut`):
+```swift
+// For symmetric points, mirror the control handle
+let point = glyph.outline.contours[contourIndex].points[pointIndex]
+if point.type == .symmetric, let _ = point.controlOut {
+    let dx = point.position.x - newPosition.x
+    let dy = point.position.y - newPosition.y
+    glyph.outline.contours[contourIndex].points[pointIndex].controlOut = CGPoint(
+        x: point.position.x + dx,
+        y: point.position.y + dy
+    )
+}
+```
+
+**After** (single helper using KeyPath):
+```swift
+private func mirrorSymmetricControlHandle(
+    at location: (contourIndex: Int, pointIndex: Int),
+    movedHandle newPosition: CGPoint,
+    mirrorTarget: WritableKeyPath<PathPoint, CGPoint?>
+) {
+    let point = glyph.outline.contours[location.contourIndex].points[location.pointIndex]
+    guard point.type == .symmetric, point[keyPath: mirrorTarget] != nil else { return }
+
+    let dx = point.position.x - newPosition.x
+    let dy = point.position.y - newPosition.y
+    glyph.outline.contours[location.contourIndex].points[location.pointIndex][keyPath: mirrorTarget] = CGPoint(
+        x: point.position.x + dx,
+        y: point.position.y + dy
+    )
+}
+```
+
+### Code Quality Analysis Findings
+
+#### Force Unwraps: All Safe
+All force unwraps (`!`) are properly guarded by precondition checks:
+- `min()!/max()!` on collections guarded by `guard !collection.isEmpty`
+- `first!/last!` guarded by `guard points.count > 2`
+- `CIFilter(name:)!` for built-in Core Image filters (always exist)
+- `UTType(filenameExtension:)!` for well-known extensions like "otf"
+
+#### Dead Code Analysis
+No truly orphaned functions found. Some functions are scaffolding for future ML models:
+- `renderPair()` - renders glyph pairs for ML model that doesn't exist yet
+- `applyDeskew()` - placeholder that returns input unchanged
+
+This is intentional infrastructure for planned features, not accidental dead code.
+
+#### 12. Naming Convention Fixes
+
+**Boolean Property Naming**:
+- Renamed `allModelsReady` → `areAllModelsReady` in `ModelManager.swift` to follow Swift "is/are" prefix convention
+- Updated all usages in `GenerateView.swift` (6 occurrences) and `ModelManagerBugTests.swift`
+
+**Verb Usage Standardization**:
+- Renamed `measureSlant()` → `analyzeSlant()` in `StyleEncoder.swift`
+- Renamed `measureRoundness()` → `analyzeRoundness()` in `StyleEncoder.swift`
+- Renamed `measureRegularity()` → `analyzeRegularity()` in `StyleEncoder.swift`
+- All style analysis functions now consistently use "analyze" verb
+
+#### 13. Documentation Addition
+
+Added missing documentation comment to `ProjectStorage.swift`:
+```swift
+/// Service for saving and loading FontProject files to disk using JSON serialization.
+actor ProjectStorage {
+```
+
+### Final Analysis Summary
+
+| Check | Status | Notes |
+|-------|--------|-------|
+| Force unwraps | ✓ Safe | All guarded by preconditions |
+| Dead code | ✓ None | ML scaffolding is intentional |
+| Retain cycles | ✓ None | Proper `[weak self]` usage |
+| Async/await | ✓ Correct | Appropriate `Task.detached` usage |
+| Integer overflow | ✓ Safe | Bounded by OpenType spec |
+| Swift 6 features | ✓ Using | Actors for I/O, Sendable types |
+| Documentation | ✓ Complete | All services documented |
+
+### Final Test Results
+- **Unit Tests**: 400 tests pass
+- **UI Tests**: 3 tests pass (including multi-minute comprehensive tests)
+- **Build**: Clean with no warnings
+
+---
+
+## 2026-01-20: Workstream B - GlyphDiffusion Model Implementation
+
+### Summary
+Implemented the complete GlyphDiffusion model for glyph generation using Flow-Matching Diffusion. This is the core AI model that will generate glyph images conditioned on character identity and style embeddings.
+
+### GitHub Issue
+- Created Issue #32: Implement Workstream B: GlyphDiffusion Model
+
+### Files Created
+
+**`scripts/models/glyph_diffusion/config.py`** (9.5KB)
+- `ModelConfig`: UNet architecture (resolution, channels, attention, embeddings)
+- `TrainingConfig`: Batch size, LR, epochs, EMA, mixed precision, logging
+- `FlowMatchingConfig`: Noise schedule (train/inference steps, sigma min/max)
+- `SamplingConfig`: Inference settings (steps, guidance, batch size)
+- `DataConfig`: Dataset paths and train/val/test splits
+- Character mapping utilities for 62 characters (a-z, A-Z, 0-9)
+
+**`scripts/models/glyph_diffusion/model.py`** (21KB)
+- `SinusoidalTimeEmbedding`: Standard sinusoidal position embedding for timesteps
+- `TimeEmbedMLP`: Projects time embedding to conditioning dimension
+- `CharacterEmbedding`: Learned embeddings for 62 character classes
+- `AdaIN`: Adaptive Instance Normalization for style conditioning
+- `ResidualBlock`: GroupNorm + SiLU + Conv with time/style conditioning
+- `AttentionBlock`: Multi-head self-attention for global dependencies
+- `Downsample/Upsample`: Strided conv and nearest neighbor + conv
+- `UNet`: Full encoder-decoder with skip connections
+- `GlyphDiffusionModel`: Top-level wrapper with parameter counting
+
+**`scripts/models/glyph_diffusion/noise_schedule.py`** (14KB)
+- `FlowMatchingSchedule`: Optimal transport flow matching implementation
+  - Linear interpolation: `x_t = (1-t) * x_0 + t * noise`
+  - Velocity target: `v = noise - data` (constant along OT paths)
+  - `add_noise()`: Create noisy samples at timestep t
+  - `get_velocity()`: Compute training targets
+  - `step()`: Euler step for inference
+- `FlowMatchingScheduler`: PyTorch module for inference loop
+- `FlowMatchingLoss`: MSE loss on velocity prediction
+- `sample_euler()`: Full sampling loop with optional guidance
+
+**`scripts/models/glyph_diffusion/train.py`** (29KB)
+- `EMAModel`: Exponential Moving Average for stable sampling
+- `DummyGlyphDataset`: Synthetic data for development/testing
+- Data loading with real dataset fallback
+- Optimizer: AdamW with weight decay
+- Scheduler: Linear warmup + cosine decay
+- Mixed precision training with GradScaler
+- Gradient clipping at configurable norm
+- Checkpoint save/load with resume support
+- Wandb and TensorBoard logging
+- Full CLI with argparse for all hyperparameters
+
+**`scripts/models/glyph_diffusion/sample.py`** (18KB)
+- `GlyphSampler`: High-level inference class
+  - Load checkpoint with EMA weights
+  - Generate single or multiple characters
+  - Generate full alphabet with consistent style
+  - Support partial completion with masks
+- Output utilities: tensor_to_image, save_image, save_numpy
+- Grid visualization for character sets
+- Full CLI for batch generation
+
+**`scripts/models/glyph_diffusion/__init__.py`** (3KB)
+- Package documentation and exports
+
+### Architecture Details
+
+**UNet Configuration:**
+- Base channels: 64
+- Channel multipliers: [1, 2, 4, 8] → [64, 128, 256, 512]
+- Residual blocks per level: 2
+- Attention at: 16x16 and 8x8 resolutions
+- Heads: 4
+- Dropout: 0.0 (configurable)
+
+**Conditioning:**
+- Time: Sinusoidal (256-dim) → MLP → residual blocks
+- Character: Learned embedding (64-dim) → projected to time dimension
+- Style: 128-dim vector → AdaIN in every residual block
+- Mask: Concatenated to input (optional)
+
+**Flow Matching:**
+- Train steps: 1000
+- Inference steps: 50 (configurable 10-100)
+- Sigma min/max: 1e-4 to 1.0
+- Prediction type: velocity
+
+### Training Configuration Defaults
+- Batch size: 64
+- Learning rate: 1e-4
+- LR warmup: 1000 steps
+- LR schedule: Cosine decay to 1% of initial
+- Gradient clip: 1.0
+- EMA decay: 0.9999
+- Mixed precision: fp16
+- Checkpoints: Every 5 epochs
+
+### CLI Usage Examples
+
+```bash
+# Training
+python train.py --config default --epochs 100
+python train.py --batch-size 32 --lr 1e-4 --use-wandb
+python train.py --resume checkpoints/latest.pt
+
+# Sampling
+python sample.py --checkpoint best.pt --char "A" --output a.png
+python sample.py --checkpoint best.pt --charset lowercase --output-dir outputs/
+python sample.py --checkpoint best.pt --charset all --steps 100 --save-grid grid.png
+```
+
+### Dependencies
+- Added `einops>=0.7.0` to `scripts/requirements.txt` for tensor rearrangement
+
+### Quality Targets
+- Generate recognizable glyphs after training
+- Consistent stroke weight across characters
+- Style adherence to conditioning
+- Performance: < 2s per glyph on M1 (after CoreML conversion)
+
+### Next Steps
+1. Complete Workstream A (Training Data Pipeline) to provide real data
+2. Train the model on extracted glyph images
+3. Implement StyleEncoder (Workstream C) for font style extraction
+4. Convert trained model to CoreML for iOS/macOS integration

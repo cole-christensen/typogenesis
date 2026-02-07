@@ -7,7 +7,6 @@ actor WebFontExporter {
     enum WebFontError: Error, LocalizedError {
         case compressionFailed
         case invalidInput
-        case woff2NotSupported
 
         var errorDescription: String? {
             switch self {
@@ -15,8 +14,6 @@ actor WebFontExporter {
                 return "Failed to compress font data"
             case .invalidInput:
                 return "Invalid font data"
-            case .woff2NotSupported:
-                return "WOFF2 export requires Brotli compression (not yet implemented)"
             }
         }
     }
@@ -69,7 +66,7 @@ actor WebFontExporter {
         woffData.writeUInt32(0)
 
         // Calculate compressed table data
-        var compressedTables: [(tag: String, origLength: UInt32, compLength: UInt32, data: Data)] = []
+        var compressedTables: [(tag: String, checksum: UInt32, origLength: UInt32, compLength: UInt32, data: Data)] = []
 
         for table in tables {
             let compressed = try compressData(table.data)
@@ -78,6 +75,7 @@ actor WebFontExporter {
             if compressed.count < table.data.count {
                 compressedTables.append((
                     tag: table.tag,
+                    checksum: table.checksum,
                     origLength: UInt32(table.data.count),
                     compLength: UInt32(compressed.count),
                     data: compressed
@@ -85,6 +83,7 @@ actor WebFontExporter {
             } else {
                 compressedTables.append((
                     tag: table.tag,
+                    checksum: table.checksum,
                     origLength: UInt32(table.data.count),
                     compLength: UInt32(table.data.count),
                     data: table.data
@@ -102,7 +101,7 @@ actor WebFontExporter {
             woffData.writeUInt32(dataOffset)
             woffData.writeUInt32(table.compLength)
             woffData.writeUInt32(table.origLength)
-            woffData.writeUInt32(table.origLength)  // origChecksum (using origLength as placeholder)
+            woffData.writeUInt32(table.checksum)  // origChecksum
 
             // Pad to 4-byte boundary
             let paddedLength = (table.compLength + 3) & ~3
@@ -128,16 +127,217 @@ actor WebFontExporter {
     }
 
     /// Convert TTF data to WOFF2 format
+    ///
+    /// WOFF2 uses Brotli compression (available via COMPRESSION_BROTLI on macOS 14+).
+    /// This is a simplified v1 implementation that compresses all tables together
+    /// without applying WOFF2 table transformations (glyf/loca transforms).
     func exportWOFF2(ttfData: Data) throws -> Data {
-        // WOFF2 requires Brotli compression which isn't available in Foundation
-        // For now, throw an error indicating it's not supported
-        throw WebFontError.woff2NotSupported
+        guard ttfData.count >= 12 else {
+            throw WebFontError.invalidInput
+        }
 
-        // Future implementation would:
-        // 1. Parse TTF tables
-        // 2. Apply WOFF2 preprocessing (transform tables)
-        // 3. Compress with Brotli
-        // 4. Build WOFF2 structure
+        // Parse TTF structure
+        let tables = try parseTTFTables(from: ttfData)
+
+        // WOFF2 known table tags in order (index 0-62)
+        // Tables with these tags use flag-based encoding instead of literal tag
+        let knownTags = [
+            "cmap", "head", "hhea", "hmtx", "maxp", "name", "OS/2", "post",
+            "cvt ", "fpgm", "glyf", "loca", "prep", "CFF ", "VORG", "EBDT",
+            "EBLC", "gasp", "hdmx", "kern", "LTSH", "PCLT", "VDMX", "vhea",
+            "vmtx", "BASE", "GDEF", "GPOS", "GSUB", "EBSC", "JSTF", "MATH",
+            "CBDT", "CBLC", "COLR", "CPAL", "SVG ", "sbix", "acnt", "avar",
+            "bdat", "bloc", "bsln", "cvar", "fdsc", "feat", "fmtx", "fvar",
+            "gvar", "hsty", "just", "lcar", "mort", "morx", "opbd", "prop",
+            "trak", "Zapf", "Silf", "Glat", "Gloc", "Feat", "Sill"
+        ]
+
+        // Sort tables according to WOFF2 recommended order
+        let sortedTables = tables.sorted { t1, t2 in
+            let idx1 = knownTags.firstIndex(of: t1.tag) ?? 999
+            let idx2 = knownTags.firstIndex(of: t2.tag) ?? 999
+            if idx1 != idx2 {
+                return idx1 < idx2
+            }
+            return t1.tag < t2.tag
+        }
+
+        // Build the uncompressed data stream (all tables concatenated with 4-byte padding between them)
+        var uncompressedStream = Data()
+        var tableInfos: [(tag: String, origLength: UInt32)] = []
+
+        for (index, table) in sortedTables.enumerated() {
+            tableInfos.append((
+                tag: table.tag,
+                origLength: UInt32(table.data.count)
+            ))
+            uncompressedStream.append(table.data)
+
+            // WOFF2 spec requires 4-byte padding between tables, but NOT after the last table
+            if index < sortedTables.count - 1 {
+                let padding = (4 - (table.data.count % 4)) % 4
+                for _ in 0..<padding {
+                    uncompressedStream.append(0)
+                }
+            }
+        }
+
+        // Compress the entire stream with Brotli
+        let compressedStream = try compressDataBrotli(uncompressedStream)
+
+        // Calculate totalSfntSize: sfnt header (12 bytes) + table directory (16 bytes per table)
+        // + sum of each table's data padded to 4-byte alignment
+        var totalSfntSize: UInt32 = 12 + UInt32(sortedTables.count) * 16
+        for table in sortedTables {
+            totalSfntSize += UInt32((table.data.count + 3) & ~3) // 4-byte aligned
+        }
+
+        // Build WOFF2 file
+        var woff2Data = Data()
+
+        // === WOFF2 Header (48 bytes) ===
+
+        // Signature: "wOF2"
+        woff2Data.writeTag("wOF2")
+
+        // Flavor: original font flavor (TrueType or CFF)
+        let flavor = ttfData.prefix(4)
+        woff2Data.append(flavor)
+
+        // Length: total WOFF2 file size (placeholder, update later)
+        let lengthOffset = woff2Data.count
+        woff2Data.writeUInt32(0)
+
+        // NumTables
+        woff2Data.writeUInt16(UInt16(sortedTables.count))
+
+        // Reserved
+        woff2Data.writeUInt16(0)
+
+        // TotalSfntSize: uncompressed font size including sfnt header
+        woff2Data.writeUInt32(totalSfntSize)
+
+        // TotalCompressedSize: size of compressed data block
+        woff2Data.writeUInt32(UInt32(compressedStream.count))
+
+        // MajorVersion
+        woff2Data.writeUInt16(1)
+
+        // MinorVersion
+        woff2Data.writeUInt16(0)
+
+        // MetaOffset, MetaLength, MetaOrigLength (no metadata)
+        woff2Data.writeUInt32(0)
+        woff2Data.writeUInt32(0)
+        woff2Data.writeUInt32(0)
+
+        // PrivOffset, PrivLength (no private data)
+        woff2Data.writeUInt32(0)
+        woff2Data.writeUInt32(0)
+
+        // === Table Directory ===
+        // Each entry is variable-length with UIntBase128 encoding
+
+        for info in tableInfos {
+            // Flags byte: bits 0-5 = known table index or 63 for arbitrary tag
+            // bits 6-7 = transformation version
+            // For glyf/loca: version 3 (0xC0) = null transform (no transformation applied)
+            // For other tables: version 0 = no transform
+            if let knownIndex = knownTags.firstIndex(of: info.tag) {
+                var flagByte = UInt8(knownIndex)
+                // glyf and loca require transformation version 3 (null transform)
+                // when writing raw untransformed table data
+                if info.tag == "glyf" || info.tag == "loca" {
+                    flagByte |= 0xC0  // Set bits 6-7 to 11 (version 3)
+                }
+                woff2Data.writeUInt8(flagByte)
+            } else {
+                // Unknown table: flag = 63, followed by 4-byte tag
+                woff2Data.writeUInt8(63)
+                woff2Data.writeTag(info.tag)
+            }
+
+            // origLength as UIntBase128
+            writeUIntBase128(&woff2Data, value: info.origLength)
+
+            // transformLength is only written for transformation version 0 (actual transform).
+            // For version 3 (null transform, 0xC0), transformLength is NOT written.
+            // Since we use version 3 for glyf/loca and version 0 for others (no transform),
+            // no transformLength field is needed for any table.
+        }
+
+        // === Compressed Data Stream ===
+        woff2Data.append(compressedStream)
+
+        // Update length field with actual total size
+        let totalLength = UInt32(woff2Data.count)
+        woff2Data.replaceSubrange(
+            lengthOffset..<lengthOffset + 4,
+            with: withUnsafeBytes(of: totalLength.bigEndian) { Data($0) }
+        )
+
+        return woff2Data
+    }
+
+    // MARK: - WOFF2 Helpers
+
+    /// Compress data using Brotli (COMPRESSION_BROTLI)
+    /// WOFF2 spec requires Brotli compression always - no raw data bypass.
+    private func compressDataBrotli(_ data: Data) throws -> Data {
+        let sourceSize = data.count
+
+        // Allocate destination buffer sized for Brotli worst case.
+        // Per the Brotli spec, worst-case output is: input_size + (input_size >> 14) + 11 + 1.
+        // We use +1024 instead of +12 for comfortable margin.
+        let destinationSize = sourceSize + (sourceSize >> 14) + 1024
+        let destinationBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: destinationSize)
+        defer { destinationBuffer.deallocate() }
+
+        let compressedSize = data.withUnsafeBytes { sourceBuffer -> Int in
+            guard let sourcePtr = sourceBuffer.bindMemory(to: UInt8.self).baseAddress else {
+                return 0
+            }
+
+            return compression_encode_buffer(
+                destinationBuffer,
+                destinationSize,
+                sourcePtr,
+                sourceSize,
+                nil,
+                COMPRESSION_BROTLI
+            )
+        }
+
+        if compressedSize <= 0 {
+            throw WebFontError.compressionFailed
+        }
+
+        return Data(bytes: destinationBuffer, count: compressedSize)
+    }
+
+    /// Write a UInt32 value using WOFF2's UIntBase128 variable-length encoding
+    /// Values are encoded in big-endian order with 7 bits per byte, MSB indicating continuation
+    private func writeUIntBase128(_ data: inout Data, value: UInt32) {
+        if value == 0 {
+            data.writeUInt8(0)
+            return
+        }
+
+        // Calculate how many bytes we need (1-5 bytes for UInt32)
+        var bytes: [UInt8] = []
+        var remaining = value
+
+        while remaining > 0 {
+            bytes.insert(UInt8(remaining & 0x7F), at: 0)
+            remaining >>= 7
+        }
+
+        // Set continuation bit (0x80) on all bytes except the last
+        for i in 0..<bytes.count - 1 {
+            bytes[i] |= 0x80
+        }
+
+        data.append(contentsOf: bytes)
     }
 
     // MARK: - Helper Methods
@@ -194,7 +394,18 @@ actor WebFontExporter {
     private func compressData(_ data: Data) throws -> Data {
         // Use zlib compression (DEFLATE)
         let sourceSize = data.count
-        let destinationBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: sourceSize)
+
+        // Skip compression for tiny tables (< 32 bytes). The zlib header/trailer overhead
+        // (~11 bytes for raw deflate, more with wrapper) means compression of very small
+        // inputs often produces output larger than the original, wasting CPU for no benefit.
+        if sourceSize < 32 {
+            return data
+        }
+
+        // Allocate destination buffer with extra space
+        // Compression can produce larger output for incompressible data
+        let destinationSize = sourceSize + 1024  // Extra headroom for zlib overhead
+        let destinationBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: destinationSize)
         defer { destinationBuffer.deallocate() }
 
         let compressedSize = data.withUnsafeBytes { sourceBuffer -> Int in
@@ -204,7 +415,7 @@ actor WebFontExporter {
 
             return compression_encode_buffer(
                 destinationBuffer,
-                sourceSize,
+                destinationSize,
                 sourcePtr,
                 sourceSize,
                 nil,
@@ -212,8 +423,18 @@ actor WebFontExporter {
             )
         }
 
-        guard compressedSize > 0 else {
+        // Negative or zero return from compression_encode_buffer indicates a real failure
+        if compressedSize < 0 {
             throw WebFontError.compressionFailed
+        }
+        if compressedSize == 0 {
+            throw WebFontError.compressionFailed
+        }
+
+        // If compressed output is larger than or equal to the original, compression expanded
+        // the data (common for already-compressed or incompressible tables). Return original.
+        if compressedSize >= sourceSize {
+            return data
         }
 
         return Data(bytes: destinationBuffer, count: compressedSize)

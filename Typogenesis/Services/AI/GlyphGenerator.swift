@@ -27,7 +27,13 @@ import os.log
 /// ## Confidence Values
 /// - 0.0: Template/algorithmic generation (honest - this is what we do)
 /// - 0.9: Would be used for real AI generation (unreachable currently)
-final class GlyphGenerator {
+///
+/// ## Thread Safety
+/// This class conforms to `@unchecked Sendable` because:
+/// - `styleEncoder` and `strokeBuilder` are set at init and read-only thereafter (no mutation after init)
+/// - `templateLibrary` is a shared singleton with its own thread safety
+/// - `_generationStats` is protected by `statsLock` (NSLock)
+final class GlyphGenerator: @unchecked Sendable {
 
     enum GeneratorError: Error, LocalizedError {
         case modelNotLoaded
@@ -125,14 +131,34 @@ final class GlyphGenerator {
     private let templateLibrary = GlyphTemplateLibrary.shared
     private let strokeBuilder = StrokeBuilder()
 
-    /// Cache for model-generated images to avoid redundant processing
-    private var generationCache: [String: GlyphOutline] = [:]
-
     /// Logger for tracking generation method and fallback usage
     private static let logger = Logger(subsystem: "com.typogenesis", category: "GlyphGenerator")
 
-    /// Track statistics about generation method usage
-    private(set) var generationStats = GenerationStats()
+    /// Lock for thread-safe stats access
+    private let statsLock = NSLock()
+
+    /// Track statistics about generation method usage (access via recordStat/getStats for thread safety)
+    private var _generationStats = GenerationStats()
+
+    /// Thread-safe read access to generation stats
+    var generationStats: GenerationStats {
+        statsLock.lock()
+        defer { statsLock.unlock() }
+        return _generationStats
+    }
+
+    /// Thread-safe stat recording
+    private func recordFallback() {
+        statsLock.lock()
+        defer { statsLock.unlock() }
+        _generationStats.fallbackGenerations += 1
+    }
+
+    private func recordTemplate() {
+        statsLock.lock()
+        defer { statsLock.unlock() }
+        _generationStats.templateGenerations += 1
+    }
 
     /// Statistics about generation method usage
     struct GenerationStats {
@@ -190,7 +216,8 @@ final class GlyphGenerator {
         guard hasModel else {
             // Log fallback usage
             Self.logger.info("Using template fallback for '\(String(character))' - AI model not loaded")
-            generationStats.fallbackGenerations += 1
+            // Note: recordFallback()/recordTemplate() is called inside generatePlaceholder -> generateFromTemplate,
+            // so we do NOT call recordFallback() here to avoid double-counting.
 
             // Return placeholder when model not available
             return try await generatePlaceholder(
@@ -239,7 +266,7 @@ final class GlyphGenerator {
         mode: GenerationMode,
         metrics: FontMetrics,
         settings: GenerationSettings = .default,
-        onProgress: ((Int, Int) -> Void)? = nil
+        onProgress: (@Sendable (Int, Int) -> Void)? = nil
     ) async throws -> [GenerationResult] {
         var results: [GenerationResult] = []
 
@@ -258,17 +285,18 @@ final class GlyphGenerator {
         return results
     }
 
-    /// Check if generation is available
+    /// Check if generation is available.
+    /// Returns true because template-based generation always works as fallback.
+    /// For real AI model availability, use `GlyphGenerator.isModelAvailable()`.
     var isAvailable: Bool {
-        // Either real model or placeholder
-        true
+        true  // Template fallback is always available
     }
 
     // MARK: - Model-Based Generation
 
     /// Generate a glyph using the CoreML diffusion model
     /// Falls back to template generation if model is unavailable or fails
-    func generateWithModel(
+    internal func generateWithModel(
         character: Character,
         style: StyleEncoder.FontStyle,
         metrics: FontMetrics,
@@ -363,12 +391,12 @@ final class GlyphGenerator {
         }
 
         let styleArray = try MLMultiArray(shape: [128], dataType: .float32)
-        for (i, value) in styleEmbedding.enumerated() {
-            styleArray[i] = NSNumber(value: value)
+        for i in 0..<min(styleEmbedding.count, 128) {
+            styleArray[i] = NSNumber(value: styleEmbedding[i])
         }
 
         let seedArray = try MLMultiArray(shape: [1], dataType: .float32)
-        seedArray[0] = NSNumber(value: Float(actualSeed % 10000) / 10000.0)
+        seedArray[0] = NSNumber(value: Float(Double(actualSeed) / Double(UInt64.max)))
 
         // Use MLDictionaryFeatureProvider since actual model types aren't available until models are compiled
         return try MLDictionaryFeatureProvider(dictionary: [
@@ -673,8 +701,8 @@ final class GlyphGenerator {
             // Return the partial as-is (user provided it)
             outline = partial
             let bounds = partial.boundingBox
-            advanceWidth = bounds.width + Int(CGFloat(metrics.unitsPerEm) * 0.2)
-            leftSideBearing = Int(CGFloat(metrics.unitsPerEm) * 0.1)
+            advanceWidth = bounds.width + Int(CGFloat(metrics.unitsPerEm) * SpacingRatio.rightSideBearing)
+            leftSideBearing = Int(CGFloat(metrics.unitsPerEm) * SpacingRatio.leftSideBearing)
             generationSource = .manual  // User-provided
 
         case .fromScratch:
@@ -717,6 +745,7 @@ final class GlyphGenerator {
     ) -> (outline: GlyphOutline, advanceWidth: Int, leftSideBearing: Int) {
         // Try to get a template for this character
         if let template = templateLibrary.template(for: character) {
+            recordTemplate()
             let styleParams = StrokeBuilder.StyleParams(from: style)
 
             let outline = strokeBuilder.buildGlyph(
@@ -741,10 +770,11 @@ final class GlyphGenerator {
         }
 
         // Fallback to geometric placeholder for unsupported characters
+        recordFallback()
         let outline = createGeometricPlaceholder(for: character, metrics: metrics)
         let bounds = outline.boundingBox
         let advanceWidth = max(bounds.width + Int(CGFloat(metrics.unitsPerEm) * SpacingRatio.rightSideBearing), Int(CGFloat(metrics.unitsPerEm) * SpacingRatio.minAdvanceWidth))
-        let leftSideBearing = Int(CGFloat(metrics.unitsPerEm) * 0.1)
+        let leftSideBearing = Int(CGFloat(metrics.unitsPerEm) * SpacingRatio.leftSideBearing)
 
         return (outline, advanceWidth, leftSideBearing)
     }
@@ -928,37 +958,5 @@ final class GlyphGenerator {
         }
 
         return zip(a, b).map { $0 * (1 - t) + $1 * t }
-    }
-}
-
-// MARK: - CoreML Input Helper
-
-/// Input feature provider for the GlyphDiffusion model
-private class GlyphDiffusionInput: MLFeatureProvider {
-    let characterEmbedding: MLMultiArray
-    let styleEmbedding: MLMultiArray
-    let seed: MLMultiArray
-
-    var featureNames: Set<String> {
-        ["characterEmbedding", "styleEmbedding", "seed"]
-    }
-
-    func featureValue(for featureName: String) -> MLFeatureValue? {
-        switch featureName {
-        case "characterEmbedding":
-            return MLFeatureValue(multiArray: characterEmbedding)
-        case "styleEmbedding":
-            return MLFeatureValue(multiArray: styleEmbedding)
-        case "seed":
-            return MLFeatureValue(multiArray: seed)
-        default:
-            return nil
-        }
-    }
-
-    init(characterEmbedding: MLMultiArray, styleEmbedding: MLMultiArray, seed: MLMultiArray) {
-        self.characterEmbedding = characterEmbedding
-        self.styleEmbedding = styleEmbedding
-        self.seed = seed
     }
 }

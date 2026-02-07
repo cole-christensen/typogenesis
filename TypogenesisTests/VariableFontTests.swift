@@ -191,7 +191,7 @@ struct VariableFontConfigTests {
     func defaultNotVariable() {
         let config = VariableFontConfig()
 
-        #expect(config.isVariableFont == false)
+        #expect(!config.isVariableFont)
         #expect(config.axes.isEmpty)
         #expect(config.masters.isEmpty)
         #expect(config.instances.isEmpty)
@@ -201,21 +201,87 @@ struct VariableFontConfigTests {
     func weightOnlyConfig() {
         let config = VariableFontConfig.weightOnly()
 
-        #expect(config.isVariableFont == true)
+        #expect(config.isVariableFont)
+
+        // Verify axis
         #expect(config.axes.count == 1)
-        #expect(config.axes.first?.tag == VariationAxis.weightTag)
+        let weightAxis = config.axes[0]
+        #expect(weightAxis.tag == VariationAxis.weightTag)
+        #expect(weightAxis.name == "Weight")
+        #expect(weightAxis.minValue == 100)
+        #expect(weightAxis.defaultValue == 400)
+        #expect(weightAxis.maxValue == 900)
+
+        // Verify masters have correct names and design locations
         #expect(config.masters.count == 2)
+        let lightMaster = config.masters[0]
+        let boldMaster = config.masters[1]
+        #expect(lightMaster.name == "Light Master")
+        #expect(lightMaster.location[VariationAxis.weightTag] == 300)
+        #expect(boldMaster.name == "Bold Master")
+        #expect(boldMaster.location[VariationAxis.weightTag] == 700)
+
+        // Verify instances have correct names and weight values
         #expect(config.instances.count == 5)
+        let instanceNames = config.instances.map(\.name)
+        #expect(instanceNames == ["Light", "Regular", "Medium", "Semibold", "Bold"])
+
+        let instanceWeights = config.instances.map { $0.location[VariationAxis.weightTag] }
+        #expect(instanceWeights == [300, 400, 500, 600, 700])
     }
 
     @Test("Weight and width config")
     func weightAndWidthConfig() {
         let config = VariableFontConfig.weightAndWidth()
 
-        #expect(config.isVariableFont == true)
+        #expect(config.isVariableFont)
+
+        // Verify axes
         #expect(config.axes.count == 2)
+        let weightAxis = config.axes[0]
+        #expect(weightAxis.tag == VariationAxis.weightTag)
+        #expect(weightAxis.name == "Weight")
+        #expect(weightAxis.minValue == 100)
+        #expect(weightAxis.defaultValue == 400)
+        #expect(weightAxis.maxValue == 900)
+
+        let widthAxis = config.axes[1]
+        #expect(widthAxis.tag == VariationAxis.widthTag)
+        #expect(widthAxis.name == "Width")
+        #expect(widthAxis.minValue == 75)
+        #expect(widthAxis.defaultValue == 100)
+        #expect(widthAxis.maxValue == 125)
+
+        // Verify masters have correct names and design locations
         #expect(config.masters.count == 4)
+        let masterNames = config.masters.map(\.name)
+        #expect(masterNames == ["Light Condensed", "Light Expanded", "Bold Condensed", "Bold Expanded"])
+
+        #expect(config.masters[0].location[VariationAxis.weightTag] == 300)
+        #expect(config.masters[0].location[VariationAxis.widthTag] == 75)
+        #expect(config.masters[1].location[VariationAxis.weightTag] == 300)
+        #expect(config.masters[1].location[VariationAxis.widthTag] == 125)
+        #expect(config.masters[2].location[VariationAxis.weightTag] == 700)
+        #expect(config.masters[2].location[VariationAxis.widthTag] == 75)
+        #expect(config.masters[3].location[VariationAxis.weightTag] == 700)
+        #expect(config.masters[3].location[VariationAxis.widthTag] == 125)
+
+        // Verify instances have correct names and locations
         #expect(config.instances.count == 9)
+        let instanceNames = config.instances.map(\.name)
+        #expect(instanceNames == [
+            "Light Condensed", "Light", "Light Expanded",
+            "Regular Condensed", "Regular", "Regular Expanded",
+            "Bold Condensed", "Bold", "Bold Expanded"
+        ])
+
+        // Verify instance weight values
+        let instanceWeights = config.instances.map { $0.location[VariationAxis.weightTag] }
+        #expect(instanceWeights == [300, 300, 300, 400, 400, 400, 700, 700, 700])
+
+        // Verify instance width values
+        let instanceWidths = config.instances.map { $0.location[VariationAxis.widthTag] }
+        #expect(instanceWidths == [75, 100, 125, 75, 100, 125, 75, 100, 125])
     }
 
     @Test("Config is Codable")
@@ -232,6 +298,25 @@ struct VariableFontConfigTests {
         #expect(decoded.axes.count == original.axes.count)
         #expect(decoded.masters.count == original.masters.count)
         #expect(decoded.instances.count == original.instances.count)
+
+        // Verify axis values survive roundtrip
+        let decodedAxis = decoded.axes[0]
+        #expect(decodedAxis.tag == VariationAxis.weightTag)
+        #expect(decodedAxis.minValue == 100)
+        #expect(decodedAxis.defaultValue == 400)
+        #expect(decodedAxis.maxValue == 900)
+
+        // Verify master values survive roundtrip
+        #expect(decoded.masters[0].name == "Light Master")
+        #expect(decoded.masters[0].location[VariationAxis.weightTag] == 300)
+        #expect(decoded.masters[1].name == "Bold Master")
+        #expect(decoded.masters[1].location[VariationAxis.weightTag] == 700)
+
+        // Verify instance values survive roundtrip
+        let decodedInstanceNames = decoded.instances.map(\.name)
+        #expect(decodedInstanceNames == ["Light", "Regular", "Medium", "Semibold", "Bold"])
+        let decodedWeights = decoded.instances.map { $0.location[VariationAxis.weightTag] }
+        #expect(decodedWeights == [300, 400, 500, 600, 700])
     }
 }
 
@@ -354,7 +439,7 @@ struct FontProjectVariableConfigTests {
             style: "Regular"
         )
 
-        #expect(project.variableConfig.isVariableFont == false)
+        #expect(!project.variableConfig.isVariableFont)
         #expect(project.variableConfig.axes.isEmpty)
     }
 
@@ -367,7 +452,7 @@ struct FontProjectVariableConfigTests {
             variableConfig: .weightOnly()
         )
 
-        #expect(project.variableConfig.isVariableFont == true)
+        #expect(project.variableConfig.isVariableFont)
         #expect(project.variableConfig.axes.count == 1)
     }
 
@@ -386,7 +471,7 @@ struct FontProjectVariableConfigTests {
         let decoder = JSONDecoder()
         let decoded = try decoder.decode(FontProject.self, from: data)
 
-        #expect(decoded.variableConfig.isVariableFont == true)
+        #expect(decoded.variableConfig.isVariableFont)
         #expect(decoded.variableConfig.axes.count == original.variableConfig.axes.count)
     }
 }

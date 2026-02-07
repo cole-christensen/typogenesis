@@ -2,12 +2,20 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject var appState: AppState
+    @ObservedObject private var modelManager = ModelManager.shared
 
     @AppStorage("gridSize") private var gridSize = 50
     @AppStorage("showGrid") private var showGrid = true
     @AppStorage("showMetrics") private var showMetrics = true
     @AppStorage("snapToGrid") private var snapToGrid = true
     @AppStorage("aiAssistEnabled") private var aiAssistEnabled = true
+    @AppStorage("showWelcomeOnLaunch") private var showWelcomeOnLaunch = true
+    @AppStorage("checkForUpdatesAutomatically") private var checkForUpdatesAutomatically = true
+    @AppStorage("defaultUnitsPerEm") private var defaultUnitsPerEm = 1000
+    @AppStorage("autoSuggestKerning") private var autoSuggestKerning = true
+    @AppStorage("styleConsistencyWarnings") private var styleConsistencyWarnings = true
+
+    @State private var showingModelDownloadAlert = false
 
     var body: some View {
         TabView {
@@ -32,8 +40,8 @@ struct SettingsView: View {
     private var generalSettings: some View {
         Form {
             Section("Application") {
-                Toggle("Show welcome screen on launch", isOn: .constant(true))
-                Toggle("Check for updates automatically", isOn: .constant(true))
+                Toggle("Show welcome screen on launch", isOn: $showWelcomeOnLaunch)
+                Toggle("Check for updates automatically", isOn: $checkForUpdatesAutomatically)
             }
         }
         .formStyle(.grouped)
@@ -50,7 +58,7 @@ struct SettingsView: View {
             }
 
             Section("Defaults") {
-                Picker("Default Units/Em", selection: .constant(1000)) {
+                Picker("Default Units/Em", selection: $defaultUnitsPerEm) {
                     Text("1000").tag(1000)
                     Text("2048").tag(2048)
                 }
@@ -64,22 +72,27 @@ struct SettingsView: View {
         Form {
             Section("AI Features") {
                 Toggle("Enable AI Assistance", isOn: $aiAssistEnabled)
-                Toggle("Auto-suggest kerning", isOn: .constant(true))
-                Toggle("Style consistency warnings", isOn: .constant(true))
+                Toggle("Auto-suggest kerning", isOn: $autoSuggestKerning)
+                Toggle("Style consistency warnings", isOn: $styleConsistencyWarnings)
             }
 
             Section("Models") {
-                LabeledContent("Glyph Generation", value: "Not loaded")
-                LabeledContent("Style Encoder", value: "Not loaded")
-                LabeledContent("Kerning Net", value: "Not loaded")
+                LabeledContent("Glyph Generation", value: modelManager.glyphDiffusionStatus.displayText)
+                LabeledContent("Style Encoder", value: modelManager.styleEncoderStatus.displayText)
+                LabeledContent("Kerning Net", value: modelManager.kerningNetStatus.displayText)
 
                 Button("Download Models...") {
-                    // Model download
+                    showingModelDownloadAlert = true
                 }
             }
         }
         .formStyle(.grouped)
         .padding()
+        .alert("Models Not Available", isPresented: $showingModelDownloadAlert) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("AI models are not yet available for download. In the meantime, AI features use geometric fallback generation to create placeholder glyphs.")
+        }
     }
 }
 

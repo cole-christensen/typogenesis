@@ -21,6 +21,7 @@ enum AccessibilityID {
         static let variableItem = "sidebar.variable"
         static let generateItem = "sidebar.generate"
         static let handwritingItem = "sidebar.handwriting"
+        static let cloneItem = "sidebar.clone"
     }
 
     // MARK: - Glyph Grid
@@ -162,5 +163,24 @@ enum AccessibilityID {
         static let assignGrid = "handwriting.assignGrid"
         static let importButton = "handwriting.importButton"
         static let stepIndicator = "handwriting.stepIndicator"
+    }
+
+    // MARK: - Clone Wizard
+    enum Clone {
+        static let wizard = "clone.wizard"
+        static let uploadArea = "clone.uploadArea"
+        static let selectFontButton = "clone.selectFont"
+        static let analyzeButton = "clone.analyzeButton"
+        static let analyzingIndicator = "clone.analyzing"
+        static let styleCard = "clone.styleCard"
+        static let characterSetPicker = "clone.characterSet"
+        static let generateButton = "clone.generateButton"
+        static let generatingIndicator = "clone.generating"
+        static let previewCanvas = "clone.preview"
+        static let applyButton = "clone.applyButton"
+        static let cancelButton = "clone.cancelButton"
+        static let backButton = "clone.backButton"
+        static let nextButton = "clone.nextButton"
+        static let stepIndicator = "clone.stepIndicator"
     }
 }

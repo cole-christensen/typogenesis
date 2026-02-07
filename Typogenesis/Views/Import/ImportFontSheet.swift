@@ -35,7 +35,7 @@ struct ImportFontSheet: View {
         .padding(24)
         .frame(width: 500)
         .alert("Import Error", isPresented: $showError) {
-            Button("OK") {}
+            Button("OK", role: .cancel) { }
         } message: {
             Text(analysisError ?? "Unknown error")
         }
@@ -318,6 +318,9 @@ struct ImportFontSheet: View {
         guard let project = importedProject else { return }
         appState.currentProject = project
         appState.selectedGlyph = nil
+        if let url = selectedURL {
+            appState.addToRecentProjects(url)
+        }
         dismiss()
     }
 

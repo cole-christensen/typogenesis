@@ -41,45 +41,24 @@ struct GlyphDiffusionIntegrationTests {
         // Check availability (should be false without loaded models)
         let isAvailable = GlyphGenerator.isModelAvailable()
 
-        // Result should be boolean
-        #expect(isAvailable == false || isAvailable == true)
+        // Without loaded CoreML models, model should not be available
+        #expect(!isAvailable, "Model should not be available without loaded CoreML models")
 
         // Multiple checks should return same result
         let secondCheck = GlyphGenerator.isModelAvailable()
         #expect(isAvailable == secondCheck, "Model availability should be consistent")
     }
 
-    @Test("Generator is always available due to fallback")
-    func testGeneratorAlwaysAvailable() {
-        let generator = GlyphGenerator()
-        #expect(generator.isAvailable, "Generator should always be available due to template fallback")
+    @Test("Model is not available without loaded CoreML models")
+    @MainActor
+    func testModelNotAvailableWithoutModels() async {
+        let isAvailable = GlyphGenerator.isModelAvailable()
+        #expect(!isAvailable, "Model should not be available without loaded CoreML models")
     }
 
     // MARK: - Generation Tests
 
-    @Test("Generate returns valid glyph outline")
-    func testGenerateReturnsValidOutline() async throws {
-        let generator = GlyphGenerator()
-        let metrics = createTestMetrics()
-        let style = createTestStyle()
-
-        let result = try await generator.generate(
-            character: "A",
-            mode: .fromScratch(style: style),
-            metrics: metrics,
-            settings: .fast
-        )
-
-        // Verify output is a valid glyph
-        #expect(result.glyph.character == "A")
-        #expect(!result.glyph.outline.isEmpty, "Generated glyph should have non-empty outline")
-        #expect(result.glyph.outline.contours.count >= 1, "Should have at least one contour")
-
-        // Verify contours have valid points
-        for contour in result.glyph.outline.contours {
-            #expect(contour.points.count >= 3, "Contour should have at least 3 points")
-        }
-    }
+    // testGenerateReturnsValidOutline removed (C21): duplicates GlyphGeneratorTests.testGeneratedGlyphHasVisibleContent
 
     @Test("Generate produces valid GlyphOutline structure")
     func testGenerateProducesValidStructure() async throws {
@@ -184,34 +163,24 @@ struct GlyphDiffusionIntegrationTests {
         // Both should produce valid output
         #expect(!thinResult.glyph.outline.isEmpty)
         #expect(!boldResult.glyph.outline.isEmpty)
+
+        // Different style parameters should produce different outlines
+        let thinBounds = thinResult.glyph.outline.boundingBox
+        let boldBounds = boldResult.glyph.outline.boundingBox
+
+        // Bold should be wider or have different point count (stroke weight differs)
+        let thinPoints = thinResult.glyph.outline.contours.reduce(0) { $0 + $1.points.count }
+        let boldPoints = boldResult.glyph.outline.contours.reduce(0) { $0 + $1.points.count }
+        let pointsDiffer = thinPoints != boldPoints
+        let boundsDiffer = thinBounds.width != boldBounds.width || thinBounds.height != boldBounds.height
+
+        #expect(pointsDiffer || boundsDiffer,
+                "Different styles (thin vs bold) should produce different outlines")
     }
 
     // MARK: - Fallback Behavior Tests
 
-    @Test("Fallback to template generation when model unavailable")
-    func testFallbackToTemplate() async throws {
-        let generator = GlyphGenerator()
-        let metrics = createTestMetrics()
-        let style = createTestStyle()
-
-        // Since model is not loaded, this should fall back to template
-        let result = try await generator.generate(
-            character: "A",
-            mode: .fromScratch(style: style),
-            metrics: metrics,
-            settings: .fast
-        )
-
-        // Should still produce valid output
-        #expect(!result.glyph.outline.isEmpty)
-        #expect(result.glyph.character == "A")
-
-        // Confidence should be 0.0 for placeholder generation
-        #expect(result.confidence == 0.0, "Placeholder generation should have zero confidence")
-
-        // Should be marked as placeholder
-        #expect(result.glyph.generatedBy == .placeholder, "Should be marked as placeholder generation")
-    }
+    // testFallbackToTemplate removed (C21): duplicates GlyphGeneratorTests.testPlaceholderMarkedAsPlaceholder
 
     @Test("generateWithModel falls back gracefully")
     func testGenerateWithModelFallback() async throws {
@@ -253,29 +222,7 @@ struct GlyphDiffusionIntegrationTests {
         }
     }
 
-    @Test("Generated glyph has proper metrics")
-    func testGeneratedGlyphMetrics() async throws {
-        let generator = GlyphGenerator()
-        let metrics = createTestMetrics()
-        let style = createTestStyle()
-
-        let result = try await generator.generate(
-            character: "M",
-            mode: .fromScratch(style: style),
-            metrics: metrics,
-            settings: .fast
-        )
-
-        let glyph = result.glyph
-
-        // Verify advance width is reasonable
-        #expect(glyph.advanceWidth > 0, "Advance width should be positive")
-        #expect(glyph.advanceWidth <= metrics.unitsPerEm * 2, "Advance width should be reasonable")
-
-        // Verify left side bearing
-        #expect(glyph.leftSideBearing >= 0, "Left side bearing should be non-negative")
-        #expect(glyph.leftSideBearing < glyph.advanceWidth, "LSB should be less than advance width")
-    }
+    // testGeneratedGlyphMetrics removed (C21): duplicates GlyphGeneratorTests.testGenerationResultGlyph
 
     // MARK: - Performance Tests
 
@@ -323,6 +270,7 @@ struct GlyphDiffusionIntegrationTests {
         }
 
         #expect(results.count == characters.count, "Should generate all characters")
+        #expect(totalReportedTime > 0, "Total reported generation time should be positive")
     }
 
     // MARK: - Edge Cases
@@ -333,8 +281,8 @@ struct GlyphDiffusionIntegrationTests {
         let metrics = createTestMetrics()
         let style = createTestStyle()
 
-        // Test with non-ASCII characters
-        let unicodeChars: [Character] = ["e", "n", "a"] // Common characters that should have templates
+        // Test with actual non-ASCII characters and accented Latin
+        let unicodeChars: [Character] = ["\u{00E9}", "\u{00F1}", "\u{00E4}"] // é, ñ, ä
 
         for char in unicodeChars {
             let result = try await generator.generate(
@@ -345,8 +293,8 @@ struct GlyphDiffusionIntegrationTests {
             )
 
             #expect(result.glyph.character == char)
-            // Should produce some output even if just a placeholder
-            #expect(!result.glyph.outline.isEmpty || result.glyph.advanceWidth > 0)
+            // Unicode characters should produce non-empty outlines
+            #expect(!result.glyph.outline.isEmpty, "Unicode character \(char) should produce non-empty outline")
         }
     }
 

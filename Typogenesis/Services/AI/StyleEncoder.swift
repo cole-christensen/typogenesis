@@ -3,11 +3,16 @@ import CoreGraphics
 import AppKit
 @preconcurrency import CoreML
 import CoreImage
-import Accelerate
 import os.log
 
 /// Service for extracting style features from fonts and glyphs
-final class StyleEncoder {
+///
+/// ## Thread Safety
+/// This class conforms to `@unchecked Sendable` because:
+/// - `embeddingCache` is protected by `cacheLock` (NSLock)
+/// - `representativeChars` is immutable (let) and set at init
+/// - All other state is either immutable or accessed through lock-protected methods
+final class StyleEncoder: @unchecked Sendable {
 
     /// Logger for tracking encoding method and fallback usage
     private static let logger = Logger(subsystem: "com.typogenesis", category: "StyleEncoder")
@@ -101,7 +106,9 @@ final class StyleEncoder {
         // Analyze geometric properties
         let strokeWeight = analyzeStrokeWeight(project)
         let strokeContrast = analyzeStrokeContrast(project)
-        let xHeightRatio = Float(project.metrics.xHeight) / Float(project.metrics.capHeight)
+        let xHeightRatio = project.metrics.capHeight > 0
+            ? Float(project.metrics.xHeight) / Float(project.metrics.capHeight)
+            : 0.5  // Default ratio when capHeight is unset
         let widthRatio = analyzeWidthRatio(project)
         let slant = analyzeSlant(project)
         let serifStyle = classifySerifStyle(project)
@@ -129,7 +136,7 @@ final class StyleEncoder {
     }
 
     /// Encode a single glyph to a style embedding
-    func encodeGlyph(_ glyph: Glyph) async throws -> [Float] {
+    internal func encodeGlyph(_ glyph: Glyph) async throws -> [Float] {
         let hasModel = await MainActor.run { ModelManager.shared.styleEncoder != nil }
         guard hasModel else {
             throw StyleEncoderError.modelNotLoaded
@@ -428,9 +435,9 @@ final class StyleEncoder {
 
         // Report any encoding failures for debugging
         if !encodingFailures.isEmpty {
-            print("[StyleEncoder] WARNING: Failed to encode \(encodingFailures.count) glyphs:")
+            Self.logger.warning("Failed to encode \(encodingFailures.count) glyphs")
             for (char, error) in encodingFailures {
-                print("  - '\(char)': \(error.localizedDescription)")
+                Self.logger.warning("  '\(String(char))': \(error.localizedDescription)")
             }
         }
 
@@ -558,8 +565,14 @@ final class StyleEncoder {
         let width = image.width
         let height = image.height
         let bytesPerPixel = image.bitsPerPixel / 8
+        let bytesPerRow = image.bytesPerRow
 
-        guard pixels.count >= width * height * bytesPerPixel else {
+        // Prevent out-of-bounds access on grayscale or other sub-3-channel images
+        guard bytesPerPixel >= 3 else {
+            return Array(repeating: 0.0, count: 128)
+        }
+
+        guard pixels.count >= bytesPerRow * height else {
             return embedding
         }
 
@@ -571,7 +584,7 @@ final class StyleEncoder {
         // Compute mean and variance (grayscale equivalent)
         for y in 0..<height {
             for x in 0..<width {
-                let offset = (y * width + x) * bytesPerPixel
+                let offset = y * bytesPerRow + x * bytesPerPixel
                 // Convert to grayscale using luminance weights
                 let r = Float(pixels[offset])
                 let g = Float(pixels[offset + 1])
@@ -596,7 +609,7 @@ final class StyleEncoder {
         for y in stride(from: 0, to: height, by: max(height / 16, 1)) {
             var rowSum: Float = 0
             for x in 0..<width {
-                let offset = (y * width + x) * bytesPerPixel
+                let offset = y * bytesPerRow + x * bytesPerPixel
                 let gray = (Float(pixels[offset]) + Float(pixels[offset + 1]) + Float(pixels[offset + 2])) / 3.0
                 rowSum += (255 - gray) / 255.0
             }
@@ -607,7 +620,7 @@ final class StyleEncoder {
         for x in stride(from: 0, to: width, by: max(width / 16, 1)) {
             var colSum: Float = 0
             for y in 0..<height {
-                let offset = (y * width + x) * bytesPerPixel
+                let offset = y * bytesPerRow + x * bytesPerPixel
                 let gray = (Float(pixels[offset]) + Float(pixels[offset + 1]) + Float(pixels[offset + 2])) / 3.0
                 colSum += (255 - gray) / 255.0
             }
@@ -636,11 +649,11 @@ final class StyleEncoder {
         idx = 36
 
         // Fill remaining with derived features
-        // Edge density estimation
+        // Pixel intensity sampling at grid positions
         for i in 36..<128 {
             let sampleX = (i - 36) % width
             let sampleY = ((i - 36) / width) % height
-            let offset = (sampleY * width + sampleX) * bytesPerPixel
+            let offset = sampleY * bytesPerRow + sampleX * bytesPerPixel
             if offset + 2 < pixels.count {
                 embedding[i] = Float(pixels[offset]) / 255.0
             }
@@ -654,13 +667,14 @@ final class StyleEncoder {
         var hasher = Hasher()
         hasher.combine(image.width)
         hasher.combine(image.height)
+        hasher.combine(image.bitsPerPixel)
 
-        // Sample some pixels for hash
+        // Sample pixels spread across the image for a more representative hash
         if let dataProvider = image.dataProvider,
            let data = dataProvider.data as Data? {
             let bytes = [UInt8](data)
-            // Sample every 1000th byte
-            for i in stride(from: 0, to: min(bytes.count, 10000), by: 1000) {
+            let stride = max(bytes.count / 256, 1)  // ~256 samples across image
+            for i in Swift.stride(from: 0, to: bytes.count, by: stride) {
                 hasher.combine(bytes[i])
             }
         }
@@ -682,7 +696,7 @@ final class StyleEncoder {
 
         // Enforce cache size limit
         if embeddingCache.count >= EncodingParams.maxCacheSize {
-            // Remove oldest entries (simple eviction: remove first half)
+            // Remove arbitrary entries (Dictionary has no ordering; this is not LRU eviction)
             let keysToRemove = Array(embeddingCache.keys.prefix(EncodingParams.maxCacheSize / 2))
             for k in keysToRemove {
                 embeddingCache.removeValue(forKey: k)
@@ -741,29 +755,5 @@ final class StyleEncoder {
 
     private func lerp(_ a: Float, _ b: Float, _ t: Float) -> Float {
         a + (b - a) * t
-    }
-}
-
-// MARK: - CoreML Input Helper
-
-/// Input feature provider for the StyleEncoder model
-private class StyleEncoderInput: MLFeatureProvider {
-    let image: CVPixelBuffer
-
-    var featureNames: Set<String> {
-        ["image"]
-    }
-
-    func featureValue(for featureName: String) -> MLFeatureValue? {
-        switch featureName {
-        case "image":
-            return MLFeatureValue(pixelBuffer: image)
-        default:
-            return nil
-        }
-    }
-
-    init(image: CVPixelBuffer) {
-        self.image = image
     }
 }

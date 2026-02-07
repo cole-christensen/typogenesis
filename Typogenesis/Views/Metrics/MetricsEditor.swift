@@ -8,10 +8,11 @@ struct MetricsEditor: View {
     var body: some View {
         HSplitView {
             metricsForm
-                .frame(minWidth: 300, maxWidth: 400)
+                .layoutPriority(0)
 
             if showPreview {
                 metricsPreview
+                    .layoutPriority(1)
             }
         }
         .onAppear {
@@ -251,30 +252,40 @@ struct MetricsPreviewCanvas: View {
 
             GeometryReader { geometry in
                 Canvas { context, size in
+                    // Guard against zero-size canvas
+                    guard size.width > 0, size.height > 0 else { return }
+
                     let centerX = size.width / 2
                     let baselineY = size.height * 0.7
 
-                    // Draw metrics lines
-                    drawMetricLine(context: context, y: baselineY, width: size.width, color: .blue, label: "Baseline")
-                    drawMetricLine(context: context, y: baselineY - CGFloat(metrics.xHeight) * scale, width: size.width, color: .green, label: "x-Height")
-                    drawMetricLine(context: context, y: baselineY - CGFloat(metrics.capHeight) * scale, width: size.width, color: .orange, label: "Cap Height")
-                    drawMetricLine(context: context, y: baselineY - CGFloat(metrics.ascender) * scale, width: size.width, color: .red, label: "Ascender")
-                    drawMetricLine(context: context, y: baselineY - CGFloat(metrics.descender) * scale, width: size.width, color: .purple, label: "Descender")
+                    // Draw metrics lines - clamp y values to visible range
+                    let clampY: (CGFloat) -> CGFloat = { y in
+                        max(0, min(y, size.height))
+                    }
 
-                    // Draw em square indicator
-                    let emSize = CGFloat(metrics.unitsPerEm) * scale
+                    drawMetricLine(context: context, y: clampY(baselineY), width: size.width, color: .blue, label: "Baseline")
+                    drawMetricLine(context: context, y: clampY(baselineY - CGFloat(metrics.xHeight) * scale), width: size.width, color: .green, label: "x-Height")
+                    drawMetricLine(context: context, y: clampY(baselineY - CGFloat(metrics.capHeight) * scale), width: size.width, color: .orange, label: "Cap Height")
+                    drawMetricLine(context: context, y: clampY(baselineY - CGFloat(metrics.ascender) * scale), width: size.width, color: .red, label: "Ascender")
+                    drawMetricLine(context: context, y: clampY(baselineY - CGFloat(metrics.descender) * scale), width: size.width, color: .purple, label: "Descender")
+
+                    // Draw em square indicator - clamp to visible area
+                    let safeEmSize = max(CGFloat(metrics.unitsPerEm), 1) * scale
+                    let emRectY = baselineY - CGFloat(metrics.ascender) * scale
                     let emRect = CGRect(
-                        x: centerX - emSize / 2,
-                        y: baselineY - CGFloat(metrics.ascender) * scale,
-                        width: emSize,
-                        height: emSize
+                        x: max(0, centerX - safeEmSize / 2),
+                        y: max(0, emRectY),
+                        width: min(safeEmSize, size.width),
+                        height: min(safeEmSize, size.height)
                     )
                     context.stroke(Path(emRect), with: .color(.gray.opacity(0.5)), lineWidth: 1)
 
                     // Draw sample text using system font scaled to match metrics
+                    // Guard against zero/negative capHeight
+                    let safeFontSize = max(CGFloat(metrics.capHeight) * scale * 0.8, 8)
                     let text = Text(sampleText)
-                        .font(.system(size: CGFloat(metrics.capHeight) * scale * 0.8))
-                    context.draw(text, at: CGPoint(x: centerX, y: baselineY - CGFloat(metrics.xHeight) * scale / 2), anchor: .center)
+                        .font(.system(size: safeFontSize))
+                    context.draw(text, at: CGPoint(x: centerX, y: clampY(baselineY - CGFloat(metrics.xHeight) * scale / 2)), anchor: .center)
                 }
             }
         }

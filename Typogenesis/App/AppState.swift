@@ -14,8 +14,13 @@ final class AppState: ObservableObject {
     @Published var importError: String?
     @Published var showImportError = false
     @Published var showImportSheet = false
+    @Published var projectError: String?
+    @Published var showProjectError = false
 
-    enum SidebarItem: Hashable {
+    /// URL of the currently open project file (nil for unsaved projects)
+    @Published var projectURL: URL?
+
+    enum SidebarItem: Hashable, CaseIterable {
         case glyphs
         case metrics
         case kerning
@@ -23,6 +28,7 @@ final class AppState: ObservableObject {
         case variable
         case generate
         case handwriting
+        case clone
     }
 
     private let projectStorage = ProjectStorage()
@@ -39,6 +45,7 @@ final class AppState: ObservableObject {
             style: "Regular"
         )
         currentProject = project
+        projectURL = nil
         selectedGlyph = nil
     }
 
@@ -48,19 +55,46 @@ final class AppState: ObservableObject {
         panel.allowsMultipleSelection = false
 
         if panel.runModal() == .OK, let url = panel.url {
-            Task {
-                do {
-                    let project = try await projectStorage.load(from: url)
-                    currentProject = project
-                    addToRecentProjects(url)
-                } catch {
-                    print("Failed to open project: \(error)")
-                }
+            loadProject(from: url)
+        }
+    }
+
+    func loadProject(from url: URL) {
+        Task {
+            do {
+                let project = try await projectStorage.load(from: url)
+                currentProject = project
+                projectURL = url
+                selectedGlyph = nil
+                addToRecentProjects(url)
+            } catch {
+                projectError = "Failed to open project: \(error.localizedDescription)"
+                showProjectError = true
             }
         }
     }
 
+    /// Save project. If project has a known URL, saves in place; otherwise shows Save As dialog.
     func saveProject() {
+        guard let project = currentProject else { return }
+
+        if let url = projectURL {
+            // Save in place
+            Task {
+                do {
+                    try await projectStorage.save(project, to: url)
+                } catch {
+                    projectError = "Failed to save project: \(error.localizedDescription)"
+                    showProjectError = true
+                }
+            }
+        } else {
+            saveProjectAs()
+        }
+    }
+
+    /// Always show Save As dialog for choosing a new file location.
+    func saveProjectAs() {
         guard let project = currentProject else { return }
 
         let panel = NSSavePanel()
@@ -71,9 +105,12 @@ final class AppState: ObservableObject {
             Task {
                 do {
                     try await projectStorage.save(project, to: url)
+                    projectURL = url
                     addToRecentProjects(url)
                 } catch {
-                    print("Failed to save project: \(error)")
+                    projectURL = nil
+                    projectError = "Failed to save project: \(error.localizedDescription)"
+                    showProjectError = true
                 }
             }
         }
@@ -85,7 +122,8 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func addToRecentProjects(_ url: URL) {
+    /// Adds a URL to the recent projects list. Internal access required by ImportFontSheet.
+    func addToRecentProjects(_ url: URL) {
         recentProjects.removeAll { $0 == url }
         recentProjects.insert(url, at: 0)
         if recentProjects.count > 10 {
@@ -97,24 +135,27 @@ final class AppState: ObservableObject {
     // MARK: - Glyph Management
 
     func addGlyph(for character: Character) {
-        guard currentProject != nil else { return }
+        guard var project = currentProject else { return }
 
         let glyph = Glyph(
             character: character,
-            advanceWidth: currentProject!.metrics.unitsPerEm / 2,
-            leftSideBearing: currentProject!.metrics.unitsPerEm / 20
+            advanceWidth: project.metrics.unitsPerEm / 2,
+            leftSideBearing: project.metrics.unitsPerEm / 20
         )
-        currentProject!.setGlyph(glyph, for: character)
+        project.setGlyph(glyph, for: character)
+        currentProject = project
     }
 
     func updateGlyph(_ glyph: Glyph) {
-        guard currentProject != nil else { return }
-        currentProject!.setGlyph(glyph, for: glyph.character)
+        guard var project = currentProject else { return }
+        project.setGlyph(glyph, for: glyph.character)
+        currentProject = project
     }
 
     func deleteGlyph(for character: Character) {
-        guard currentProject != nil else { return }
-        currentProject!.removeGlyph(for: character)
+        guard var project = currentProject else { return }
+        project.removeGlyph(for: character)
+        currentProject = project
         if selectedGlyph == character {
             selectedGlyph = nil
         }
@@ -146,6 +187,7 @@ final class AppState: ObservableObject {
                 let project = try await fontParser.parse(url: url)
                 currentProject = project
                 selectedGlyph = nil
+                addToRecentProjects(url)
                 isImporting = false
             } catch {
                 isImporting = false

@@ -4,6 +4,7 @@ struct GlyphGrid: View {
     let project: FontProject
     @Binding var selectedGlyph: Character?
     var onAddGlyph: (() -> Void)?
+    var onDeleteGlyph: ((Character) -> Void)?
 
     @State private var searchText = ""
     @State private var displayMode: DisplayMode = .grid
@@ -46,7 +47,6 @@ struct GlyphGrid: View {
         HStack {
             TextField("Search glyphs...", text: $searchText)
                 .textFieldStyle(.roundedBorder)
-                .frame(maxWidth: 200)
 
             Spacer()
 
@@ -55,7 +55,9 @@ struct GlyphGrid: View {
                 Image(systemName: "list.bullet").tag(DisplayMode.list)
             }
             .pickerStyle(.segmented)
-            .frame(width: 80)
+            .labelsHidden()
+            .fixedSize()
+            .help("Display mode")
 
             Button {
                 onAddGlyph?()
@@ -78,6 +80,13 @@ struct GlyphGrid: View {
                 .onTapGesture {
                     selectedGlyph = character
                 }
+                .contextMenu {
+                    if project.glyph(for: character) != nil {
+                        Button("Delete Glyph") {
+                            onDeleteGlyph?(character)
+                        }
+                    }
+                }
             }
         }
         .padding()
@@ -93,6 +102,13 @@ struct GlyphGrid: View {
                 )
                 .onTapGesture {
                     selectedGlyph = character
+                }
+                .contextMenu {
+                    if project.glyph(for: character) != nil {
+                        Button("Delete Glyph") {
+                            onDeleteGlyph?(character)
+                        }
+                    }
                 }
             }
         }
@@ -217,5 +233,4 @@ struct GlyphPreview: View {
 
 #Preview {
     GlyphGrid(project: FontProject(name: "Test", family: "Test", style: "Regular"), selectedGlyph: .constant(nil))
-        .frame(width: 400, height: 300)
 }

@@ -1,5 +1,6 @@
 import Foundation
 
+/// Service for saving and loading FontProject files to disk using JSON serialization.
 actor ProjectStorage {
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()

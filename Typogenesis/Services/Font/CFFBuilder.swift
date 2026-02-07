@@ -8,6 +8,8 @@ struct CFFBuilder {
     enum CFFError: Error, LocalizedError {
         case invalidGlyphData
         case encodingFailed(String)
+        case tooManyItems
+        case valueOutOfRange(Int)
 
         var errorDescription: String? {
             switch self {
@@ -15,42 +17,109 @@ struct CFFBuilder {
                 return "Invalid glyph data for CFF encoding"
             case .encodingFailed(let reason):
                 return "CFF encoding failed: \(reason)"
+            case .tooManyItems:
+                return "CFF INDEX count exceeds maximum of 65535"
+            case .valueOutOfRange(let value):
+                return "CharString number \(value) outside encodable range -32768..32767"
             }
         }
+    }
+
+    // MARK: - Shared Constants
+
+    /// Nominal width used for CharString width delta encoding.
+    /// Both build() and buildPrivateDict() must agree on this value.
+    /// Computed as safeUnitsPerEm / 2.
+    private static func nominalWidth(for project: FontProject) -> Int {
+        let safeUnitsPerEm = max(project.metrics.unitsPerEm, 1)
+        return safeUnitsPerEm / 2
     }
 
     // MARK: - Public API
 
     /// Build a complete CFF table from a font project
+    /// Uses two-pass approach: build CharStrings and Private DICT first,
+    /// then compute real offsets for the Top DICT.
     static func build(project: FontProject, glyphOrder: [(Character?, Glyph?)]) throws -> Data {
-        var cff = Data()
+        // N1: Use shared nominalWidth source of truth
+        let nomWidth = nominalWidth(for: project)
 
-        // CFF Header
-        cff.append(buildHeader())
+        // --- Pass 1: Build all sections except Top DICT to determine sizes ---
 
-        // Name INDEX
+        let header = buildHeader()
         let nameIndex = buildNameIndex(name: project.family)
-        cff.append(nameIndex)
-
-        // Top DICT INDEX
-        let topDictData = buildTopDict(project: project, glyphCount: glyphOrder.count)
-        let topDictIndex = buildIndex([topDictData])
-        cff.append(topDictIndex)
-
-        // String INDEX
         let stringIndex = buildStringIndex(project: project)
-        cff.append(stringIndex)
-
-        // Global Subr INDEX (empty)
-        let globalSubrIndex = buildIndex([])
-        cff.append(globalSubrIndex)
-
-        // CharStrings INDEX
-        let charStrings = try buildCharStrings(glyphOrder: glyphOrder, metrics: project.metrics)
-        cff.append(charStrings)
-
-        // Private DICT (minimal)
+        let globalSubrIndex = try buildIndex([])
+        let charStrings = try buildCharStrings(
+            glyphOrder: glyphOrder,
+            metrics: project.metrics,
+            nominalWidth: nomWidth
+        )
         let privateDict = buildPrivateDict(project: project)
+
+        // --- Pass 2: Build Top DICT with real offsets ---
+
+        // We need a placeholder Top DICT to measure its INDEX size.
+        // Top DICT offsets depend on the Top DICT INDEX size, which depends on the Top DICT.
+        // Resolve by computing with maximum-size placeholders first, then adjusting.
+
+        // Calculate offset to CharStrings:
+        // header + nameIndex + topDictIndex + stringIndex + globalSubrIndex
+        // topDictIndex size depends on topDict data size, so we iterate.
+
+        // Start with estimated offsets, then converge
+        var charStringsOffset = 0
+        var privateDictOffset = 0
+        var topDictData = Data()
+
+        for _ in 0..<3 {
+            topDictData = buildTopDict(
+                project: project,
+                charStringsOffset: charStringsOffset,
+                privateDictSize: privateDict.count,
+                privateDictOffset: privateDictOffset
+            )
+            let topDictIndex = try buildIndex([topDictData])
+
+            charStringsOffset = header.count + nameIndex.count + topDictIndex.count +
+                stringIndex.count + globalSubrIndex.count
+            privateDictOffset = charStringsOffset + charStrings.count
+        }
+
+        // C5: Verify convergence — recompute with final offsets and confirm they match
+        let verifyTopDict = buildTopDict(
+            project: project,
+            charStringsOffset: charStringsOffset,
+            privateDictSize: privateDict.count,
+            privateDictOffset: privateDictOffset
+        )
+        let verifyTopDictIndex = try buildIndex([verifyTopDict])
+        let verifyCharStringsOffset = header.count + nameIndex.count + verifyTopDictIndex.count +
+            stringIndex.count + globalSubrIndex.count
+        let verifyPrivateDictOffset = verifyCharStringsOffset + charStrings.count
+
+        if verifyCharStringsOffset != charStringsOffset || verifyPrivateDictOffset != privateDictOffset {
+            assertionFailure("CFF Top DICT offset convergence failed after 3 iterations: " +
+                "charStrings \(charStringsOffset) vs \(verifyCharStringsOffset), " +
+                "private \(privateDictOffset) vs \(verifyPrivateDictOffset)")
+            #if DEBUG
+            print("WARNING: CFF Top DICT offset convergence failed after 3 iterations: " +
+                "charStrings \(charStringsOffset) vs \(verifyCharStringsOffset), " +
+                "private \(privateDictOffset) vs \(verifyPrivateDictOffset)")
+            #endif
+        }
+
+        let topDictIndex = try buildIndex([topDictData])
+
+        // --- Assemble the final CFF ---
+
+        var cff = Data()
+        cff.append(header)
+        cff.append(nameIndex)
+        cff.append(topDictIndex)
+        cff.append(stringIndex)
+        cff.append(globalSubrIndex)
+        cff.append(charStrings)
         cff.append(privateDict)
 
         return cff
@@ -70,7 +139,12 @@ struct CFFBuilder {
     // MARK: - INDEX structures
 
     /// Build a CFF INDEX structure
-    private static func buildIndex(_ items: [Data]) -> Data {
+    /// C6: Throws if items.count exceeds the CFF INDEX maximum of 65535.
+    private static func buildIndex(_ items: [Data]) throws -> Data {
+        guard items.count <= Int(UInt16.max) else {
+            throw CFFError.tooManyItems
+        }
+
         var index = Data()
 
         let count = UInt16(items.count)
@@ -81,13 +155,15 @@ struct CFFBuilder {
         }
 
         // Calculate offset size needed
+        // CFF offsets are 1-based, so max offset = totalDataSize + 1
         let totalDataSize = items.reduce(0) { $0 + $1.count }
+        let maxOffset = totalDataSize + 1
         let offSize: UInt8
-        if totalDataSize < 256 {
+        if maxOffset <= 0xFF {
             offSize = 1
-        } else if totalDataSize < 65536 {
+        } else if maxOffset <= 0xFFFF {
             offSize = 2
-        } else if totalDataSize < 16777216 {
+        } else if maxOffset <= 0xFFFFFF {
             offSize = 3
         } else {
             offSize = 4
@@ -132,12 +208,19 @@ struct CFFBuilder {
 
     private static func buildNameIndex(name: String) -> Data {
         let nameData = Data(name.utf8)
-        return buildIndex([nameData])
+        // buildNameIndex is only called with a single item, so count is always 1.
+        // Force-try is safe here because count == 1 can never exceed UInt16.max.
+        return try! buildIndex([nameData])
     }
 
     // MARK: - Top DICT
 
-    private static func buildTopDict(project: FontProject, glyphCount: Int) -> Data {
+    private static func buildTopDict(
+        project: FontProject,
+        charStringsOffset: Int,
+        privateDictSize: Int,
+        privateDictOffset: Int
+    ) -> Data {
         var dict = Data()
 
         // version (SID)
@@ -171,13 +254,13 @@ struct CFFBuilder {
         encodeDictNumber(&dict, value: 0)
         dict.append(16)  // Encoding operator
 
-        // CharStrings offset (placeholder - would need to calculate actual offset)
-        encodeDictNumber(&dict, value: 0)
+        // CharStrings offset (real computed offset)
+        encodeDictNumber(&dict, value: charStringsOffset)
         dict.append(17)  // CharStrings operator
 
-        // Private DICT size and offset
-        encodeDictNumber(&dict, value: 45)  // size
-        encodeDictNumber(&dict, value: 0)   // offset (placeholder)
+        // Private DICT size and offset (real computed values)
+        encodeDictNumber(&dict, value: privateDictSize)
+        encodeDictNumber(&dict, value: privateDictOffset)
         dict.append(18)  // Private operator
 
         return dict
@@ -195,49 +278,72 @@ struct CFFBuilder {
         ]
 
         let stringData = strings.map { Data($0.utf8) }
-        return buildIndex(stringData)
+        // Force-try is safe: 4 items can never exceed UInt16.max.
+        return try! buildIndex(stringData)
     }
 
     // MARK: - CharStrings
 
     private static func buildCharStrings(
         glyphOrder: [(Character?, Glyph?)],
-        metrics: FontMetrics
+        metrics: FontMetrics,
+        nominalWidth: Int
     ) throws -> Data {
         var charStringData: [Data] = []
+
+        // Guard against division by zero
+        let safeUnitsPerEm = max(metrics.unitsPerEm, 1)
 
         for (_, glyph) in glyphOrder {
             let charString: Data
             if let glyph = glyph, !glyph.outline.isEmpty {
-                charString = try encodeGlyphToCharString(glyph: glyph, metrics: metrics)
+                charString = try encodeGlyphToCharString(
+                    glyph: glyph,
+                    metrics: metrics,
+                    nominalWidth: nominalWidth
+                )
             } else {
-                // Empty/.notdef glyph
-                charString = encodeEmptyCharString(width: metrics.unitsPerEm / 2)
+                // Empty/.notdef glyph - width as delta from nominalWidth
+                let defaultWidth = safeUnitsPerEm / 2
+                charString = try encodeEmptyCharString(widthDelta: defaultWidth - nominalWidth)
             }
             charStringData.append(charString)
         }
 
-        return buildIndex(charStringData)
+        return try buildIndex(charStringData)
     }
 
-    private static func encodeGlyphToCharString(glyph: Glyph, metrics: FontMetrics) throws -> Data {
+    private static func encodeGlyphToCharString(
+        glyph: Glyph,
+        metrics: FontMetrics,
+        nominalWidth: Int
+    ) throws -> Data {
         var cs = Data()
 
-        // Width (as difference from defaultWidthX)
-        let width = glyph.advanceWidth
-        encodeDictNumber(&cs, value: width)
+        // B1: Track current point across the entire charstring for relative deltas.
+        // Type 2 CharString operators (rmoveto, rlineto, rrcurveto) all use relative coordinates.
+        var currentX = 0
+        var currentY = 0
+
+        // Width encoded as delta from nominalWidthX (Type 2 CharString convention)
+        let widthDelta = glyph.advanceWidth - nominalWidth
+        try encodeCharStringNumber(&cs, value: widthDelta)
 
         // Encode contours
         for contour in glyph.outline.contours where !contour.points.isEmpty {
             let points = contour.points
 
-            // moveto first point
+            // moveto first point — relative to current point (B1 fix)
             if let first = points.first {
-                let x = Int(first.position.x)
-                let y = Int(first.position.y)
-                encodeDictNumber(&cs, value: x)
-                encodeDictNumber(&cs, value: y)
+                let targetX = Int(first.position.x)
+                let targetY = Int(first.position.y)
+                let dx = targetX - currentX
+                let dy = targetY - currentY
+                try encodeCharStringNumber(&cs, value: dx)
+                try encodeCharStringNumber(&cs, value: dy)
                 cs.append(21)  // rmoveto
+                currentX = targetX
+                currentY = targetY
             }
 
             // Draw remaining points
@@ -245,36 +351,80 @@ struct CFFBuilder {
                 let prev = points[i - 1]
                 let curr = points[i]
 
-                let dx = Int(curr.position.x) - Int(prev.position.x)
-                let dy = Int(curr.position.y) - Int(prev.position.y)
-
                 if let ctrlOut = prev.controlOut, let ctrlIn = curr.controlIn {
-                    // Cubic bezier curve
-                    let dx1 = Int(ctrlOut.x) - Int(prev.position.x)
-                    let dy1 = Int(ctrlOut.y) - Int(prev.position.y)
+                    // Cubic bezier curve — all deltas relative to current point
+                    let dx1 = Int(ctrlOut.x) - currentX
+                    let dy1 = Int(ctrlOut.y) - currentY
                     let dx2 = Int(ctrlIn.x) - Int(ctrlOut.x)
                     let dy2 = Int(ctrlIn.y) - Int(ctrlOut.y)
                     let dx3 = Int(curr.position.x) - Int(ctrlIn.x)
                     let dy3 = Int(curr.position.y) - Int(ctrlIn.y)
 
-                    encodeDictNumber(&cs, value: dx1)
-                    encodeDictNumber(&cs, value: dy1)
-                    encodeDictNumber(&cs, value: dx2)
-                    encodeDictNumber(&cs, value: dy2)
-                    encodeDictNumber(&cs, value: dx3)
-                    encodeDictNumber(&cs, value: dy3)
+                    try encodeCharStringNumber(&cs, value: dx1)
+                    try encodeCharStringNumber(&cs, value: dy1)
+                    try encodeCharStringNumber(&cs, value: dx2)
+                    try encodeCharStringNumber(&cs, value: dy2)
+                    try encodeCharStringNumber(&cs, value: dx3)
+                    try encodeCharStringNumber(&cs, value: dy3)
                     cs.append(8)  // rrcurveto
+                    currentX = Int(curr.position.x)
+                    currentY = Int(curr.position.y)
                 } else {
-                    // Line
-                    encodeDictNumber(&cs, value: dx)
-                    encodeDictNumber(&cs, value: dy)
+                    // Line — relative to current point
+                    let dx = Int(curr.position.x) - currentX
+                    let dy = Int(curr.position.y) - currentY
+                    try encodeCharStringNumber(&cs, value: dx)
+                    try encodeCharStringNumber(&cs, value: dy)
                     cs.append(5)  // rlineto
+                    currentX = Int(curr.position.x)
+                    currentY = Int(curr.position.y)
                 }
             }
 
-            // Close path if needed
-            if contour.isClosed {
-                // closepath is implicit before endchar
+            // B3: Emit explicit closing segment for closed contours.
+            // CFF implicit closepath draws a straight line from current point to subpath start.
+            // If the closing segment should be a curve, we must emit it explicitly.
+            if contour.isClosed && points.count > 1 {
+                let lastPoint = points[points.count - 1]
+                let firstPoint = points[0]
+
+                let firstX = Int(firstPoint.position.x)
+                let firstY = Int(firstPoint.position.y)
+
+                // Only emit closing segment if current point isn't already at the first point
+                if currentX != firstX || currentY != firstY
+                    || lastPoint.controlOut != nil || firstPoint.controlIn != nil {
+
+                    if let ctrlOut = lastPoint.controlOut, let ctrlIn = firstPoint.controlIn {
+                        // Closing segment is a cubic bezier curve
+                        let dx1 = Int(ctrlOut.x) - currentX
+                        let dy1 = Int(ctrlOut.y) - currentY
+                        let dx2 = Int(ctrlIn.x) - Int(ctrlOut.x)
+                        let dy2 = Int(ctrlIn.y) - Int(ctrlOut.y)
+                        let dx3 = firstX - Int(ctrlIn.x)
+                        let dy3 = firstY - Int(ctrlIn.y)
+
+                        try encodeCharStringNumber(&cs, value: dx1)
+                        try encodeCharStringNumber(&cs, value: dy1)
+                        try encodeCharStringNumber(&cs, value: dx2)
+                        try encodeCharStringNumber(&cs, value: dy2)
+                        try encodeCharStringNumber(&cs, value: dx3)
+                        try encodeCharStringNumber(&cs, value: dy3)
+                        cs.append(8)  // rrcurveto
+                        currentX = firstX
+                        currentY = firstY
+                    } else if currentX != firstX || currentY != firstY {
+                        // Closing segment is a straight line (only if we're not already there)
+                        let dx = firstX - currentX
+                        let dy = firstY - currentY
+                        try encodeCharStringNumber(&cs, value: dx)
+                        try encodeCharStringNumber(&cs, value: dy)
+                        cs.append(5)  // rlineto
+                        currentX = firstX
+                        currentY = firstY
+                    }
+                    // Note: implicit closepath will now draw a zero-length line (no-op)
+                }
             }
         }
 
@@ -282,9 +432,9 @@ struct CFFBuilder {
         return cs
     }
 
-    private static func encodeEmptyCharString(width: Int) -> Data {
+    private static func encodeEmptyCharString(widthDelta: Int) throws -> Data {
         var cs = Data()
-        encodeDictNumber(&cs, value: width)
+        try encodeCharStringNumber(&cs, value: widthDelta)
         cs.append(14)  // endchar
         return cs
     }
@@ -293,6 +443,9 @@ struct CFFBuilder {
 
     private static func buildPrivateDict(project: FontProject) -> Data {
         var dict = Data()
+
+        // N1: Use shared nominalWidth source of truth
+        let nomWidth = nominalWidth(for: project)
 
         // BlueValues (empty)
         encodeDictNumber(&dict, value: 0)
@@ -307,12 +460,19 @@ struct CFFBuilder {
         encodeDictNumber(&dict, value: 80)
         dict.append(11)  // StdVW operator
 
+        // N2: defaultWidthX and nominalWidthX are intentionally set to the same value.
+        // This is technically valid per the CFF spec — it means glyphs whose actual width
+        // equals the default don't need to encode a width operand at all. Setting them equal
+        // wastes a small amount of space (the width delta is always encoded even when 0),
+        // but simplifies the encoder. A future optimization could set defaultWidthX to the
+        // most common glyph width and omit the width operand for matching glyphs.
+
         // defaultWidthX
-        encodeDictNumber(&dict, value: project.metrics.unitsPerEm / 2)
+        encodeDictNumber(&dict, value: nomWidth)
         dict.append(20)  // defaultWidthX operator
 
         // nominalWidthX
-        encodeDictNumber(&dict, value: project.metrics.unitsPerEm / 2)
+        encodeDictNumber(&dict, value: nomWidth)
         dict.append(21)  // nominalWidthX operator
 
         return dict
@@ -321,6 +481,7 @@ struct CFFBuilder {
     // MARK: - Number Encoding
 
     /// Encode a number in CFF DICT format
+    /// Used for Top DICT and Private DICT operands only.
     private static func encodeDictNumber(_ data: inout Data, value: Int) {
         if value >= -107 && value <= 107 {
             // Single byte encoding
@@ -341,7 +502,7 @@ struct CFFBuilder {
             data.append(UInt8((value >> 8) & 0xFF))
             data.append(UInt8(value & 0xFF))
         } else {
-            // Five byte encoding
+            // Five byte encoding (DICT uses byte 29)
             data.append(29)
             data.append(UInt8((value >> 24) & 0xFF))
             data.append(UInt8((value >> 16) & 0xFF))
@@ -349,5 +510,35 @@ struct CFFBuilder {
             data.append(UInt8(value & 0xFF))
         }
     }
-}
 
+    /// Encode a number in Type 2 CharString format.
+    /// CharStrings use a different 5-byte encoding (byte 255) than DICT (byte 29).
+    ///
+    /// B2: Per Adobe TN#5177, byte 255 in Type 2 CharStrings encodes a Fixed 16.16 number,
+    /// NOT a plain 32-bit integer. Font coordinates should always fit in -32768..32767
+    /// (the 3-byte encoding range). Values outside this range indicate a bug in the caller,
+    /// so we throw an error rather than silently producing corrupt data.
+    private static func encodeCharStringNumber(_ data: inout Data, value: Int) throws {
+        if value >= -107 && value <= 107 {
+            data.append(UInt8(value + 139))
+        } else if value >= 108 && value <= 1131 {
+            let adjusted = value - 108
+            data.append(UInt8((adjusted >> 8) + 247))
+            data.append(UInt8(adjusted & 0xFF))
+        } else if value >= -1131 && value <= -108 {
+            let adjusted = -value - 108
+            data.append(UInt8((adjusted >> 8) + 251))
+            data.append(UInt8(adjusted & 0xFF))
+        } else if value >= -32768 && value <= 32767 {
+            // Three byte encoding (same for both DICT and CharString)
+            data.append(28)
+            data.append(UInt8((value >> 8) & 0xFF))
+            data.append(UInt8(value & 0xFF))
+        } else {
+            // B2: Values outside -32768..32767 cannot be correctly encoded as integers
+            // in Type 2 CharStrings. Byte 255 encodes Fixed 16.16, not int32.
+            // Font coordinates this large indicate a data error.
+            throw CFFError.valueOutOfRange(value)
+        }
+    }
+}
