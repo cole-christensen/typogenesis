@@ -251,9 +251,11 @@ struct KerningEditor: View {
         if let existingIndex = project.kerning.firstIndex(where: { $0.left == left && $0.right == right }) {
             // Update existing pair
             project.kerning[existingIndex] = KerningPair(left: left, right: right, value: value)
+            selectedPairIndex = existingIndex
         } else {
             // Add new pair
             project.kerning.append(KerningPair(left: left, right: right, value: value))
+            selectedPairIndex = project.kerning.count - 1
         }
 
         appState.currentProject = project
@@ -322,6 +324,7 @@ struct KerningEditor: View {
         }
 
         appState.currentProject = project
+        selectedPairIndex = nil
     }
 }
 

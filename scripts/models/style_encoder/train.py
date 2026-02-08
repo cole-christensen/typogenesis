@@ -42,7 +42,7 @@ from typing import Optional
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader, Dataset
@@ -325,7 +325,7 @@ class Trainer:
         )
 
         # Mixed precision scaler
-        self.scaler = GradScaler(enabled=config.training.mixed_precision)
+        self.scaler = GradScaler(self.device.type, enabled=config.training.mixed_precision)
 
         # Loss function
         self.criterion = get_loss_function(
@@ -379,7 +379,7 @@ class Trainer:
 
             self.optimizer.zero_grad()
 
-            with autocast(enabled=self.config.training.mixed_precision):
+            with autocast(device_type=self.device.type, enabled=self.config.training.mixed_precision):
                 # Forward pass with projection for contrastive loss
                 _, projections = self.model(images, return_projection=True)
 
@@ -469,11 +469,31 @@ class Trainer:
             return self.criterion(z_i, z_j)
 
         elif self.config.loss.loss_type == "triplet":
-            # Use supervised contrastive approach with hard mining
+            # Build proper anchor-positive pairs from same-font glyphs using labels,
+            # then use hard negative mining for the negatives.
+            unique_labels = labels.unique()
+            anchor_list = []
+            positive_list = []
+            pair_labels = []
+            for label in unique_labels:
+                mask = labels == label
+                indices = torch.where(mask)[0]
+                if len(indices) >= 2:
+                    anchor_list.append(projections[indices[0]])
+                    positive_list.append(projections[indices[1]])
+                    pair_labels.append(label)
+
+            if len(anchor_list) == 0:
+                return torch.tensor(0.0, device=projections.device, requires_grad=True)
+
+            anchors = torch.stack(anchor_list)
+            positives = torch.stack(positive_list)
+            pair_labels_t = torch.stack(pair_labels)
+
             return self.criterion(
-                projections,  # anchor
-                projections,  # positive (will be selected by label)
-                labels=labels,
+                anchors,
+                positives,
+                labels=pair_labels_t,
             )
 
         elif self.config.loss.loss_type == "infonce":
@@ -635,7 +655,7 @@ class Trainer:
         Args:
             path: Path to checkpoint file
         """
-        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+        checkpoint = torch.load(path, map_location=self.device, weights_only=True)
 
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
@@ -919,7 +939,9 @@ def main() -> None:
         AugmentationConfig(rotation_range=0, scale_range=(1.0, 1.0), noise_std=0)
     )
 
-    # Create datasets
+    # Create separate datasets for train and val so each has its own transform.
+    # random_split does not copy transforms, so we instantiate two datasets
+    # and split the font directories manually.
     full_dataset = StyleDataset(
         args.data_dir,
         glyphs_per_font=args.glyphs_per_font,
@@ -936,9 +958,29 @@ def main() -> None:
         generator=torch.Generator().manual_seed(args.seed),
     )
 
-    # Override val dataset transform
-    # Note: This is a workaround since random_split doesn't copy transforms
-    # For proper implementation, create separate datasets
+    # Override val subset's dataset transform so validation does not use
+    # training augmentations. We wrap the subset to apply val_transform.
+    class _TransformOverrideSubset(torch.utils.data.Dataset):
+        """Wraps a Subset to override the underlying dataset's transform."""
+
+        def __init__(self, subset, transform):
+            self.subset = subset
+            self.transform = transform
+
+        def __len__(self):
+            return len(self.subset)
+
+        def __getitem__(self, idx):
+            # Temporarily swap the transform on the underlying dataset
+            original_transform = self.subset.dataset.transform
+            self.subset.dataset.transform = self.transform
+            try:
+                item = self.subset[idx]
+            finally:
+                self.subset.dataset.transform = original_transform
+            return item
+
+    val_dataset = _TransformOverrideSubset(val_dataset, val_transform)
 
     # Create data loaders
     train_loader = DataLoader(

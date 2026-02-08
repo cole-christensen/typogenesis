@@ -28,7 +28,7 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader
@@ -468,7 +468,7 @@ def train_one_epoch(
     num_batches = 0
 
     use_amp = config.mixed_precision and device.type == "cuda"
-    amp_context = autocast() if use_amp else nullcontext()
+    amp_context = autocast(device_type=device.type) if use_amp else nullcontext()
 
     for batch_idx, batch in enumerate(train_loader):
         # Move data to device
@@ -713,7 +713,7 @@ def train(config: Config, resume_path: Optional[Path] = None) -> None:
     )
 
     # Create gradient scaler for mixed precision
-    scaler = GradScaler(enabled=config.training.mixed_precision)
+    scaler = GradScaler(device.type, enabled=config.training.mixed_precision)
 
     # Create loss function and schedule
     loss_fn = FlowMatchingLoss()

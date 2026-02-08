@@ -332,7 +332,7 @@ def create_style_encoder(
     model = StyleEncoder(config)
 
     if checkpoint_path is not None:
-        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
         if "model_state_dict" in checkpoint:
             model.load_state_dict(checkpoint["model_state_dict"])
         else:

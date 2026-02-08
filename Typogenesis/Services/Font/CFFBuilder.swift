@@ -431,6 +431,38 @@ struct CFFBuilder {
                     cs.append(8)  // rrcurveto
                     currentX = Int(curr.position.x)
                     currentY = Int(curr.position.y)
+                } else if prev.controlOut != nil || curr.controlIn != nil {
+                    // Quadratic bezier (one control point) — convert to cubic losslessly.
+                    // For a quadratic with control point P, start S, end E:
+                    //   cp1 = S + 2/3 * (P - S)
+                    //   cp2 = E + 2/3 * (P - E)
+                    let startX = CGFloat(currentX)
+                    let startY = CGFloat(currentY)
+                    let endX = curr.position.x
+                    let endY = curr.position.y
+                    let quadCtrl = prev.controlOut ?? curr.controlIn!
+
+                    let cp1x = startX + 2.0 / 3.0 * (quadCtrl.x - startX)
+                    let cp1y = startY + 2.0 / 3.0 * (quadCtrl.y - startY)
+                    let cp2x = endX + 2.0 / 3.0 * (quadCtrl.x - endX)
+                    let cp2y = endY + 2.0 / 3.0 * (quadCtrl.y - endY)
+
+                    let dx1 = Int(cp1x) - currentX
+                    let dy1 = Int(cp1y) - currentY
+                    let dx2 = Int(cp2x) - Int(cp1x)
+                    let dy2 = Int(cp2y) - Int(cp1y)
+                    let dx3 = Int(endX) - Int(cp2x)
+                    let dy3 = Int(endY) - Int(cp2y)
+
+                    try encodeCharStringNumber(&cs, value: dx1)
+                    try encodeCharStringNumber(&cs, value: dy1)
+                    try encodeCharStringNumber(&cs, value: dx2)
+                    try encodeCharStringNumber(&cs, value: dy2)
+                    try encodeCharStringNumber(&cs, value: dx3)
+                    try encodeCharStringNumber(&cs, value: dy3)
+                    cs.append(8)  // rrcurveto
+                    currentX = Int(endX)
+                    currentY = Int(endY)
                 } else {
                     // Line — relative to current point
                     let dx = Int(curr.position.x) - currentX
@@ -465,6 +497,36 @@ struct CFFBuilder {
                         let dy2 = Int(ctrlIn.y) - Int(ctrlOut.y)
                         let dx3 = firstX - Int(ctrlIn.x)
                         let dy3 = firstY - Int(ctrlIn.y)
+
+                        try encodeCharStringNumber(&cs, value: dx1)
+                        try encodeCharStringNumber(&cs, value: dy1)
+                        try encodeCharStringNumber(&cs, value: dx2)
+                        try encodeCharStringNumber(&cs, value: dy2)
+                        try encodeCharStringNumber(&cs, value: dx3)
+                        try encodeCharStringNumber(&cs, value: dy3)
+                        cs.append(8)  // rrcurveto
+                        currentX = firstX
+                        currentY = firstY
+                    } else if lastPoint.controlOut != nil || firstPoint.controlIn != nil {
+                        // Closing segment is a quadratic bezier (one control point) —
+                        // convert to cubic losslessly using the same 2/3 rule.
+                        let startX = CGFloat(currentX)
+                        let startY = CGFloat(currentY)
+                        let endX = CGFloat(firstX)
+                        let endY = CGFloat(firstY)
+                        let quadCtrl = lastPoint.controlOut ?? firstPoint.controlIn!
+
+                        let cp1x = startX + 2.0 / 3.0 * (quadCtrl.x - startX)
+                        let cp1y = startY + 2.0 / 3.0 * (quadCtrl.y - startY)
+                        let cp2x = endX + 2.0 / 3.0 * (quadCtrl.x - endX)
+                        let cp2y = endY + 2.0 / 3.0 * (quadCtrl.y - endY)
+
+                        let dx1 = Int(cp1x) - currentX
+                        let dy1 = Int(cp1y) - currentY
+                        let dx2 = Int(cp2x) - Int(cp1x)
+                        let dy2 = Int(cp2y) - Int(cp1y)
+                        let dx3 = firstX - Int(cp2x)
+                        let dy3 = firstY - Int(cp2y)
 
                         try encodeCharStringNumber(&cs, value: dx1)
                         try encodeCharStringNumber(&cs, value: dy1)

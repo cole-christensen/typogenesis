@@ -557,6 +557,7 @@ struct ExtendedKerningPredictorTests {
         )
 
         // Find common pairs and compare
+        #expect(!tightResult.pairs.isEmpty, "Tight result should have pairs")
         for tightPair in tightResult.pairs {
             if let loosePair = looseResult.pairs.first(where: {
                 $0.left == tightPair.left && $0.right == tightPair.right

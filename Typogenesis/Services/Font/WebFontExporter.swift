@@ -173,34 +173,34 @@ actor WebFontExporter {
             return t1.tag < t2.tag
         }
 
-        // Build the uncompressed data stream (all tables concatenated with 4-byte padding between them)
+        // Build the uncompressed data stream (all tables concatenated WITHOUT padding).
+        // Per the W3C WOFF2 spec: "There MUST NOT be any extraneous data between the
+        // table entries in the decompressed data stream." Padding only exists in the
+        // reconstructed sfnt, not in the compressed data.
         var uncompressedStream = Data()
         var tableInfos: [(tag: String, origLength: UInt32)] = []
 
-        for (index, table) in sortedTables.enumerated() {
+        for table in sortedTables {
             tableInfos.append((
                 tag: table.tag,
                 origLength: UInt32(table.data.count)
             ))
             uncompressedStream.append(table.data)
-
-            // WOFF2 spec requires 4-byte padding between tables, but NOT after the last table
-            if index < sortedTables.count - 1 {
-                let padding = (4 - (table.data.count % 4)) % 4
-                for _ in 0..<padding {
-                    uncompressedStream.append(0)
-                }
-            }
         }
 
         // Compress the entire stream with Brotli
         let compressedStream = try compressDataBrotli(uncompressedStream)
 
         // Calculate totalSfntSize: sfnt header (12 bytes) + table directory (16 bytes per table)
-        // + sum of each table's data padded to 4-byte alignment
+        // + sum of each table's data padded to 4-byte alignment (except the last table,
+        // which does not need trailing padding in the reconstructed sfnt)
         var totalSfntSize: UInt32 = 12 + UInt32(sortedTables.count) * 16
-        for table in sortedTables {
-            totalSfntSize += UInt32((table.data.count + 3) & ~3) // 4-byte aligned
+        for (index, table) in sortedTables.enumerated() {
+            if index < sortedTables.count - 1 {
+                totalSfntSize += UInt32((table.data.count + 3) & ~3)
+            } else {
+                totalSfntSize += UInt32(table.data.count)
+            }
         }
 
         // Build WOFF2 file

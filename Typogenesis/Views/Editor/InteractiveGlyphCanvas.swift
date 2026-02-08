@@ -5,6 +5,7 @@ struct InteractiveGlyphCanvas: View {
     let metrics: FontMetrics
 
     @State private var scale: CGFloat = 1.0
+    @State private var baseScale: CGFloat = 1.0
     @State private var offset: CGSize = .zero
     @AppStorage("showGrid") private var showGrid = true
     @AppStorage("showMetrics") private var showMetrics = true
@@ -284,7 +285,11 @@ struct InteractiveGlyphCanvas: View {
     private var magnificationGesture: some Gesture {
         MagnificationGesture()
             .onChanged { value in
-                scale = max(0.1, min(10, value))
+                scale = max(0.1, min(10, baseScale * value))
+            }
+            .onEnded { value in
+                baseScale = max(0.1, min(10, baseScale * value))
+                scale = baseScale
             }
     }
 
@@ -458,6 +463,7 @@ struct InteractiveGlyphCanvas: View {
 
             Button {
                 scale = 1.0
+                baseScale = 1.0
                 offset = .zero
             } label: {
                 Image(systemName: "arrow.counterclockwise")

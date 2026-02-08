@@ -149,9 +149,13 @@ actor DesignSpaceExporter {
                 filename = "Master_\(index).ufo"
             }
 
-            // Ensure filename uniqueness
-            if usedFilenames.contains(filename) {
-                filename = "\(filename.dropLast(4))_\(index).ufo"
+            // Ensure filename uniqueness — use a while loop to handle cascading
+            // collisions (e.g., "Bold" dedupes to "Bold_1.ufo" but "Bold_1" already exists)
+            let baseName = String(filename.dropLast(4))  // Remove ".ufo"
+            var suffix = 1
+            while usedFilenames.contains(filename) {
+                filename = "\(baseName)_\(suffix).ufo"
+                suffix += 1
             }
             usedFilenames.insert(filename)
 

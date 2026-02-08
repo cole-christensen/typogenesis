@@ -6,7 +6,7 @@ import CoreGraphics
 /// This builder takes centerline stroke definitions and expands them into
 /// filled contours with proper stroke weight, applying style parameters
 /// like contrast, roundness, and serif treatment.
-final class StrokeBuilder {
+final class StrokeBuilder: Sendable {
 
     // MARK: - Constants
 

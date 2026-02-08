@@ -163,31 +163,35 @@ def _run_glyph_diffusion_sample(
     """Run a single sample through GlyphDiffusion models."""
     import torch
 
-    # Generate inputs
-    noise = generate_random_input((1, 4, 64, 64), seed=sample_idx*100)
-    char_emb = generate_random_input((1, 128), seed=sample_idx*100+1)
-    style_emb = generate_random_input((1, 128), seed=sample_idx*100+2)
-    timestep = np.array([sample_idx % 50], dtype=np.int64)
+    # Generate inputs matching the GlyphDiffusion spec:
+    # x: (1, 1, 64, 64) grayscale noisy image
+    # timesteps: float32 in [0, 1]
+    # char_indices: int64 scalar index
+    # style_embed: (1, 128) float32 style vector
+    x = generate_random_input((1, 1, 64, 64), seed=sample_idx*100)
+    char_indices = np.array([sample_idx % 62], dtype=np.int64)
+    style_embed = generate_random_input((1, 128), seed=sample_idx*100+2)
+    timesteps = np.array([sample_idx % 50 / 50.0], dtype=np.float32)
 
-    # PyTorch
+    # PyTorch: forward(x, timesteps, char_indices, style_embed)
     with torch.no_grad():
         pt_output = pytorch_model(
-            torch.from_numpy(noise),
-            torch.from_numpy(char_emb),
-            torch.from_numpy(style_emb),
-            torch.from_numpy(timestep),
+            torch.from_numpy(x),
+            torch.from_numpy(timesteps),
+            torch.from_numpy(char_indices),
+            torch.from_numpy(style_embed),
         )
         pt_output = pt_output.numpy()
 
     # CoreML
     coreml_input = {
-        "noise": noise,
-        "character_embedding": char_emb,
-        "style_embedding": style_emb,
-        "timestep": timestep,
+        "x": x,
+        "timesteps": timesteps,
+        "char_indices": char_indices,
+        "style_embed": style_embed,
     }
     coreml_output = coreml_model.predict(coreml_input)
-    coreml_output = np.array(coreml_output["denoised"])
+    coreml_output = np.array(coreml_output["velocity"])
 
     return pt_output, coreml_output
 

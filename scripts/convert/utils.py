@@ -93,7 +93,7 @@ def load_pytorch_model(
 
     try:
         # Try loading as a full model first
-        checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+        checkpoint = torch.load(model_path, map_location=device, weights_only=True)
 
         # Check if it's a state dict or a full model
         if isinstance(checkpoint, dict):

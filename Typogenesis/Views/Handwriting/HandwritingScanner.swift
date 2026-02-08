@@ -914,7 +914,10 @@ struct HandwritingScanner: View {
             }
 
             await MainActor.run {
-                appState.currentProject = project
+                if var currentProject = appState.currentProject {
+                    currentProject.kerning = project.kerning
+                    appState.currentProject = currentProject
+                }
             }
         } catch {
             await MainActor.run {
