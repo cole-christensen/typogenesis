@@ -9,6 +9,15 @@ final class PathOperations {
         case subtract
         case intersect
         case xor
+
+        var displayName: String {
+            switch self {
+            case .union: return "Union"
+            case .subtract: return "Subtract"
+            case .intersect: return "Intersect"
+            case .xor: return "XOR"
+            }
+        }
     }
 
     enum PathOperationError: Error, LocalizedError {

@@ -23,6 +23,20 @@ struct TypogenesisApp: App {
                 .keyboardShortcut("o", modifiers: .command)
             }
 
+            CommandGroup(replacing: .saveItem) {
+                Button("Save Project") {
+                    appState.saveProject()
+                }
+                .keyboardShortcut("s", modifiers: .command)
+                .disabled(appState.currentProject == nil)
+
+                Button("Save As...") {
+                    appState.saveProjectAs()
+                }
+                .keyboardShortcut("s", modifiers: [.command, .shift])
+                .disabled(appState.currentProject == nil)
+            }
+
             CommandGroup(after: .saveItem) {
                 Button("Export Font...") {
                     appState.showExportSheet = true

@@ -224,8 +224,11 @@ struct FontTextRenderer: View {
             var xOffset: CGFloat = 0
             let baseline = fontSize * 0.8  // Approximate baseline
 
-            let scale = fontSize / CGFloat(project.metrics.unitsPerEm)
+            // Guard against division by zero
+            let safeUnitsPerEm = max(CGFloat(project.metrics.unitsPerEm), 1)
+            let scale = fontSize / safeUnitsPerEm
 
+            var currentIndex = text.startIndex
             for char in text {
                 if let glyph = project.glyphs[char] {
                     // Draw glyph
@@ -239,10 +242,10 @@ struct FontTextRenderer: View {
                         context.fill(Path(transformedPath), with: .color(.primary))
                     }
 
-                    // Apply kerning
-                    let nextCharIndex = text.index(after: text.firstIndex(of: char) ?? text.startIndex)
-                    if nextCharIndex < text.endIndex {
-                        let nextChar = text[nextCharIndex]
+                    // Apply kerning using tracked index (not firstIndex which breaks for repeated chars)
+                    let nextIndex = text.index(after: currentIndex)
+                    if nextIndex < text.endIndex {
+                        let nextChar = text[nextIndex]
                         if let kerningPair = project.kerning.first(where: { $0.left == char && $0.right == nextChar }) {
                             xOffset += CGFloat(kerningPair.value) * scale
                         }
@@ -268,6 +271,7 @@ struct FontTextRenderer: View {
                     )
                     xOffset += fontSize * 0.7
                 }
+                currentIndex = text.index(after: currentIndex)
             }
         }
         .frame(height: fontSize * 1.2)

@@ -119,7 +119,9 @@ struct ProjectStorageTests {
             _ = try await storage.load(from: fakeURL)
             Issue.record("Expected error to be thrown")
         } catch {
-            // Expected
+            // Should be a file-not-found error (CocoaError)
+            #expect(error is CocoaError || (error as NSError).domain == NSCocoaErrorDomain,
+                    "Expected CocoaError for nonexistent file, got \(type(of: error))")
         }
     }
 }

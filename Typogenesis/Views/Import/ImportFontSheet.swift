@@ -35,7 +35,7 @@ struct ImportFontSheet: View {
         .padding(24)
         .frame(width: 500)
         .alert("Import Error", isPresented: $showError) {
-            Button("OK") {}
+            Button("OK", role: .cancel) { }
         } message: {
             Text(analysisError ?? "Unknown error")
         }
@@ -275,8 +275,8 @@ struct ImportFontSheet: View {
     private func selectFile() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [
-            UTType(filenameExtension: "ttf")!,
-            UTType(filenameExtension: "otf")!
+            UTType(filenameExtension: "ttf") ?? .data,
+            UTType(filenameExtension: "otf") ?? .data
         ]
         panel.allowsMultipleSelection = false
         panel.message = "Select a font file to import"
@@ -318,6 +318,9 @@ struct ImportFontSheet: View {
         guard let project = importedProject else { return }
         appState.currentProject = project
         appState.selectedGlyph = nil
+        if let url = selectedURL {
+            appState.addToRecentProjects(url)
+        }
         dismiss()
     }
 

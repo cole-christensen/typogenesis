@@ -2,7 +2,7 @@ import SwiftUI
 
 struct GenerateView: View {
     @EnvironmentObject var appState: AppState
-    @StateObject private var modelManager = ModelManager.shared
+    @ObservedObject private var modelManager = ModelManager.shared
     @State private var selectedMode: GenerationMode = .completeFont
     @State private var selectedCharacterSet: CharacterSetOption = .basicLatin
     @State private var stylePrompt: String = ""
@@ -51,12 +51,13 @@ struct GenerateView: View {
     var body: some View {
         HSplitView {
             settingsPanel
-                .frame(minWidth: 300, maxWidth: 400)
+                .layoutPriority(0)
 
             previewPanel
+                .layoutPriority(1)
         }
         .alert("Generation Error", isPresented: $showingError) {
-            Button("OK") {}
+            Button("OK", role: .cancel) { }
         } message: {
             Text(errorMessage ?? "An unknown error occurred")
         }
@@ -69,16 +70,31 @@ struct GenerateView: View {
                 // Header
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
-                        Image(systemName: "wand.and.stars")
+                        Image(systemName: modelManager.areAllModelsReady ? "wand.and.stars" : "textformat.abc")
                             .font(.title)
-                            .foregroundColor(.accentColor)
-                        Text("AI Generation")
+                            .foregroundColor(modelManager.areAllModelsReady ? .accentColor : .blue)
+                        Text(modelManager.areAllModelsReady ? "AI Generation" : "Algorithmic Generation")
                             .font(.title2)
                             .fontWeight(.semibold)
                     }
-                    Text("Generate glyphs using AI models")
+                    Text(modelManager.areAllModelsReady
+                        ? "Generate glyphs using AI models"
+                        : "Generate glyphs using template-based algorithms")
                         .font(.caption)
                         .foregroundColor(.secondary)
+                }
+
+                // Info about algorithmic generation when AI not available
+                if !modelManager.areAllModelsReady {
+                    HStack(spacing: 8) {
+                        Image(systemName: "info.circle.fill")
+                            .foregroundColor(.blue)
+                        Text("Using algorithmic generation to create recognizable letterforms. Style parameters are applied to produce consistent stroke weights and proportions.")
+                            .font(.caption)
+                    }
+                    .padding(8)
+                    .background(Color.blue.opacity(0.1))
+                    .cornerRadius(6)
                 }
 
                 Divider()
@@ -306,15 +322,15 @@ struct GenerateView: View {
     @ViewBuilder
     var placeholderPreview: some View {
         VStack(spacing: 16) {
-            Image(systemName: "wand.and.stars.inverse")
+            Image(systemName: "textformat.abc")
                 .font(.system(size: 64))
                 .foregroundColor(.secondary.opacity(0.5))
 
-            Text("AI Generation")
+            Text("Glyph Generation")
                 .font(.title2)
                 .foregroundColor(.secondary)
 
-            Text("Configure your settings and click Generate to create glyphs using AI models.")
+            Text("Configure your settings and click Generate to create glyphs. Style parameters will be applied to produce consistent letterforms.")
                 .font(.body)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
@@ -420,28 +436,21 @@ struct GenerateView: View {
                 modelStatusRow(type: .kerningNet)
             }
 
-            HStack {
-                Button("Download All") {
-                    Task {
-                        for modelType in ModelManager.ModelType.allCases {
-                            await modelManager.downloadModel(modelType)
-                        }
-                    }
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(modelManager.isLoading)
-
-                if modelManager.allModelsReady {
-                    Label("Ready", systemImage: "checkmark.circle.fill")
+            // Status message
+            if modelManager.areAllModelsReady {
+                Label("All models ready", systemImage: "checkmark.circle.fill")
+                    .font(.caption)
+                    .foregroundColor(.green)
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("Using algorithmic generation", systemImage: "cpu")
                         .font(.caption)
-                        .foregroundColor(.green)
+                        .foregroundColor(.blue)
+                    Text("Generates recognizable letterforms using stroke-based templates. AI models will provide higher quality when available.")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
                 }
             }
-
-            Text("Models are required for AI generation. They will be downloaded and cached locally (~\(ModelManager.totalModelSize)).")
-                .font(.caption)
-                .foregroundColor(.secondary)
         }
     }
 
@@ -474,8 +483,10 @@ struct GenerateView: View {
         case .notDownloaded: return .gray
         case .downloading: return .orange
         case .downloaded: return .yellow
+        case .validating: return .orange
         case .loading: return .orange
         case .loaded: return .green
+        case .updateAvailable: return .blue
         case .error: return .red
         }
     }
@@ -517,35 +528,36 @@ struct GenerateView: View {
 
         let characters = charactersToGenerate
         let metrics = appState.currentProject?.metrics ?? FontMetrics()
+        let style = referenceFontStyle ?? StyleEncoder.FontStyle.default
 
         Task {
             let generator = GlyphGenerator()
-            let style = referenceFontStyle ?? StyleEncoder.FontStyle.default
 
-            for (index, char) in characters.enumerated() {
-                do {
-                    let result = try await generator.generate(
-                        character: char,
-                        mode: .fromScratch(style: style),
-                        metrics: metrics,
-                        settings: .fast
-                    )
-
-                    await MainActor.run {
-                        generatedGlyphs[char] = result.glyph
-                        generatedCount = index + 1
-                        progress = Double(index + 1) / Double(characters.count)
-                    }
-                } catch {
-                    await MainActor.run {
-                        errorMessage = "Failed to generate '\(char)': \(error.localizedDescription)"
-                        showingError = true
+            do {
+                let results = try await generator.generateBatch(
+                    characters: characters,
+                    mode: .fromScratch(style: style),
+                    metrics: metrics,
+                    settings: .fast
+                ) { completed, total in
+                    Task { @MainActor in
+                        self.generatedCount = completed
+                        self.progress = Double(completed) / Double(total)
                     }
                 }
-            }
 
-            await MainActor.run {
-                isGenerating = false
+                await MainActor.run {
+                    for (index, result) in results.enumerated() {
+                        self.generatedGlyphs[characters[index]] = result.glyph
+                    }
+                    self.isGenerating = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = "Generation failed: \(error.localizedDescription)"
+                    self.showingError = true
+                    self.isGenerating = false
+                }
             }
         }
     }

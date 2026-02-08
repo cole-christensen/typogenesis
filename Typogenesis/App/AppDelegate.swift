@@ -6,12 +6,10 @@ private let logger = Logger(subsystem: "com.typogenesis.app", category: "AppDele
 class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillFinishLaunching(_ notification: Notification) {
         logger.info("applicationWillFinishLaunching")
-        print("DEBUG: applicationWillFinishLaunching")
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         logger.info("applicationDidFinishLaunching - window count: \(NSApp.windows.count)")
-        print("DEBUG: applicationDidFinishLaunching - window count: \(NSApp.windows.count)")
 
         // Ensure the app activates and shows its window
         NSApp.setActivationPolicy(.regular)
@@ -19,15 +17,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Make sure a window is visible
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            print("DEBUG: Delayed check - window count: \(NSApp.windows.count)")
-            for (index, window) in NSApp.windows.enumerated() {
-                print("DEBUG: Window \(index): \(window.title), visible: \(window.isVisible), frame: \(window.frame)")
-            }
-
             if let window = NSApp.windows.first {
                 window.makeKeyAndOrderFront(nil)
                 NSApp.activate(ignoringOtherApps: true)
-                print("DEBUG: Activated window: \(window.title)")
             }
         }
     }

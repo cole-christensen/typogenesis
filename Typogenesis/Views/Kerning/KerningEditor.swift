@@ -17,9 +17,10 @@ struct KerningEditor: View {
     var body: some View {
         HSplitView {
             kerningList
-                .frame(minWidth: 250, maxWidth: 350)
+                .layoutPriority(0)
 
             kerningPreview
+                .layoutPriority(1)
         }
     }
 
@@ -94,7 +95,7 @@ struct KerningEditor: View {
             .environmentObject(appState)
         }
         .alert("Auto-Kerning Error", isPresented: $showAutoKernError) {
-            Button("OK") {}
+            Button("OK", role: .cancel) { }
         } message: {
             Text(autoKernError ?? "Unknown error")
         }
@@ -250,9 +251,11 @@ struct KerningEditor: View {
         if let existingIndex = project.kerning.firstIndex(where: { $0.left == left && $0.right == right }) {
             // Update existing pair
             project.kerning[existingIndex] = KerningPair(left: left, right: right, value: value)
+            selectedPairIndex = existingIndex
         } else {
             // Add new pair
             project.kerning.append(KerningPair(left: left, right: right, value: value))
+            selectedPairIndex = project.kerning.count - 1
         }
 
         appState.currentProject = project
@@ -321,6 +324,7 @@ struct KerningEditor: View {
         }
 
         appState.currentProject = project
+        selectedPairIndex = nil
     }
 }
 
@@ -354,7 +358,9 @@ struct KerningPreviewCanvas: View {
                 guard let project = project else { return }
 
                 let fontSize: CGFloat = 72
-                let scale = fontSize / CGFloat(project.metrics.unitsPerEm)
+                // Guard against division by zero
+                let safeUnitsPerEm = max(CGFloat(project.metrics.unitsPerEm), 1)
+                let scale = fontSize / safeUnitsPerEm
                 let baseline = size.height / 2 + fontSize / 3
 
                 var xPosition: CGFloat = 20
@@ -363,7 +369,7 @@ struct KerningPreviewCanvas: View {
                 for (index, char) in chars.enumerated() {
                     // Get glyph or use placeholder width
                     let glyph = project.glyph(for: char)
-                    let advanceWidth = CGFloat(glyph?.advanceWidth ?? project.metrics.unitsPerEm / 2) * scale
+                    let advanceWidth = CGFloat(glyph?.advanceWidth ?? Int(safeUnitsPerEm / 2)) * scale
 
                     // Draw character using system font as proxy
                     let charText = Text(String(char))

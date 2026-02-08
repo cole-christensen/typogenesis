@@ -17,23 +17,15 @@ struct ExportSheet: View {
         case woff = "Web Open Font (.woff)"
         case woff2 = "Web Open Font 2 (.woff2)"
         case ufo = "Unified Font Object (.ufo)"
-
-        var isSupported: Bool {
-            switch self {
-            case .ttf, .otf, .woff, .ufo: return true
-            case .woff2: return false
-            }
-        }
-
-        var statusText: String? {
-            switch self {
-            case .ttf, .otf, .woff, .ufo: return nil
-            case .woff2: return "Requires Brotli"
-            }
-        }
+        case designspace = "DesignSpace (.designspace)"
 
         var isDirectory: Bool {
-            self == .ufo
+            self == .ufo || self == .designspace
+        }
+
+        /// Whether this format requires a variable font configuration
+        var requiresVariableFont: Bool {
+            self == .designspace
         }
     }
 
@@ -71,30 +63,30 @@ struct ExportSheet: View {
                 Text("Format")
                     .font(.headline)
 
-                ForEach(ExportFormat.allCases, id: \.self) { format in
+                ForEach(availableFormats, id: \.self) { format in
                     HStack {
                         Button(action: {
-                            if format.isSupported {
+                            if isFormatAvailable(format) {
                                 selectedFormat = format
                             }
                         }) {
                             HStack {
                                 Image(systemName: selectedFormat == format ? "largecircle.fill.circle" : "circle")
-                                    .foregroundColor(format.isSupported ? .accentColor : .secondary)
+                                    .foregroundColor(isFormatAvailable(format) ? .accentColor : .secondary)
                                 Text(format.rawValue)
-                                    .foregroundColor(format.isSupported ? .primary : .secondary)
+                                    .foregroundColor(isFormatAvailable(format) ? .primary : .secondary)
                             }
                         }
                         .buttonStyle(.plain)
-                        .disabled(!format.isSupported)
+                        .disabled(!isFormatAvailable(format))
 
-                        if let status = format.statusText {
-                            Text(status)
+                        if format == .designspace && !isFormatAvailable(format) {
+                            Text("Requires 2+ masters")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
-                                .background(Color.secondary.opacity(0.2))
+                                .background(Color.orange.opacity(0.2))
                                 .cornerRadius(4)
                         }
                     }
@@ -103,14 +95,19 @@ struct ExportSheet: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            if selectedFormat == .ttf || selectedFormat == .otf || selectedFormat == .woff || selectedFormat == .ufo {
-                Toggle("Include kerning data", isOn: $includeKerning)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityIdentifier(AccessibilityID.Export.includeKerningToggle)
-            }
+            Toggle("Include kerning data", isOn: $includeKerning)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityIdentifier(AccessibilityID.Export.includeKerningToggle)
 
             if selectedFormat == .ufo {
                 Text("UFO is a directory-based format used by font editors like Glyphs and RoboFont.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if selectedFormat == .designspace {
+                Text("DesignSpace exports variable font sources with UFO masters, compatible with fontmake and professional font editors.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -146,28 +143,67 @@ struct ExportSheet: View {
         .frame(width: 400)
         .accessibilityIdentifier(AccessibilityID.Export.sheet)
         .alert("Export Error", isPresented: $showingError) {
-            Button("OK") {}
+            Button("OK", role: .cancel) { }
         } message: {
             Text(exportError ?? "Unknown error")
         }
     }
 
+    /// Formats available for the current project
+    private var availableFormats: [ExportFormat] {
+        guard let project = appState.currentProject else {
+            return ExportFormat.allCases.filter { !$0.requiresVariableFont }
+        }
+
+        // Show designspace only if project is configured as variable font
+        if project.variableConfig.isVariableFont {
+            return ExportFormat.allCases
+        } else {
+            return ExportFormat.allCases.filter { !$0.requiresVariableFont }
+        }
+    }
+
+    /// Check if a format is available for the current project
+    private func isFormatAvailable(_ format: ExportFormat) -> Bool {
+        guard let project = appState.currentProject else { return false }
+
+        if format == .designspace {
+            // DesignSpace requires variable font with at least 2 masters
+            return project.variableConfig.isVariableFont &&
+                   project.variableConfig.masters.count >= 2 &&
+                   !project.variableConfig.axes.isEmpty
+        }
+
+        return true
+    }
+
     private func exportFont() {
         guard let project = appState.currentProject else { return }
 
-        // UFO is a directory, so we need different handling
+        // Directory-based formats (UFO and DesignSpace) need different handling
         if selectedFormat.isDirectory {
             let panel = NSOpenPanel()
             panel.canChooseDirectories = true
             panel.canChooseFiles = false
             panel.canCreateDirectories = true
-            panel.message = "Choose a location to save the UFO package"
-            panel.prompt = "Save UFO"
+
+            if selectedFormat == .designspace {
+                panel.message = "Choose a location to save the DesignSpace package"
+                panel.prompt = "Save DesignSpace"
+            } else {
+                panel.message = "Choose a location to save the UFO package"
+                panel.prompt = "Save UFO"
+            }
 
             guard panel.runModal() == .OK, let baseURL = panel.url else { return }
 
-            let ufoURL = baseURL.appendingPathComponent("\(project.name).ufo")
-            exportUFO(project: project, to: ufoURL)
+            if selectedFormat == .designspace {
+                let dsURL = baseURL.appendingPathComponent("\(project.family).designspace")
+                exportDesignSpace(project: project, to: dsURL)
+            } else {
+                let ufoURL = baseURL.appendingPathComponent("\(project.name).ufo")
+                exportUFO(project: project, to: ufoURL)
+            }
         } else {
             let panel = NSSavePanel()
             panel.nameFieldStringValue = "\(project.name).\(fileExtension)"
@@ -196,7 +232,9 @@ struct ExportSheet: View {
                     format = .otf
                 case .woff:
                     format = .woff
-                case .woff2, .ufo:
+                case .woff2:
+                    format = .woff2
+                case .ufo, .designspace:
                     throw ExportError.unsupportedFormat
                 }
 
@@ -245,6 +283,31 @@ struct ExportSheet: View {
         }
     }
 
+    private func exportDesignSpace(project: FontProject, to url: URL) {
+        isExporting = true
+
+        Task {
+            do {
+                let designSpaceExporter = DesignSpaceExporter()
+                let options = DesignSpaceExporter.ExportOptions(
+                    includeKerning: includeKerning
+                )
+                try await designSpaceExporter.export(project: project, to: url, options: options)
+
+                await MainActor.run {
+                    isExporting = false
+                    dismiss()
+                }
+            } catch {
+                await MainActor.run {
+                    isExporting = false
+                    exportError = error.localizedDescription
+                    showingError = true
+                }
+            }
+        }
+    }
+
     private var fileExtension: String {
         switch selectedFormat {
         case .ttf: return "ttf"
@@ -252,6 +315,7 @@ struct ExportSheet: View {
         case .woff: return "woff"
         case .woff2: return "woff2"
         case .ufo: return "ufo"
+        case .designspace: return "designspace"
         }
     }
 

@@ -5,7 +5,9 @@ struct GlyphCanvas: View {
     let metrics: FontMetrics
 
     @State private var scale: CGFloat = 1.0
+    @State private var baseScale: CGFloat = 1.0
     @State private var offset: CGSize = .zero
+    @State private var lastCommittedOffset: CGSize = .zero
     @State private var showGrid = true
     @State private var showMetrics = true
 
@@ -41,7 +43,10 @@ struct GlyphCanvas: View {
     }
 
     private func makeTransform(size: CGSize) -> CGAffineTransform {
-        let baseScale = min(size.width, size.height) / CGFloat(metrics.unitsPerEm) * 0.7
+        // Guard against division by zero
+        let safeUnitsPerEm = max(CGFloat(metrics.unitsPerEm), 1)
+        let minDimension = max(min(size.width, size.height), 1)
+        let baseScale = minDimension / safeUnitsPerEm * 0.7
         let finalScale = baseScale * scale
 
         let centerX = size.width / 2 + offset.width
@@ -134,14 +139,28 @@ struct GlyphCanvas: View {
     private var magnificationGesture: some Gesture {
         MagnificationGesture()
             .onChanged { value in
-                scale = max(0.1, min(10, value))
+                scale = max(0.1, min(10, baseScale * value))
+            }
+            .onEnded { value in
+                baseScale = max(0.1, min(10, baseScale * value))
+                scale = baseScale
             }
     }
 
     private var dragGesture: some Gesture {
         DragGesture()
             .onChanged { value in
-                offset = value.translation
+                offset = CGSize(
+                    width: lastCommittedOffset.width + value.translation.width,
+                    height: lastCommittedOffset.height + value.translation.height
+                )
+            }
+            .onEnded { value in
+                lastCommittedOffset = CGSize(
+                    width: lastCommittedOffset.width + value.translation.width,
+                    height: lastCommittedOffset.height + value.translation.height
+                )
+                offset = lastCommittedOffset
             }
     }
 
@@ -159,7 +178,9 @@ struct GlyphCanvas: View {
 
             Button {
                 scale = 1.0
+                baseScale = 1.0
                 offset = .zero
+                lastCommittedOffset = .zero
             } label: {
                 Image(systemName: "arrow.counterclockwise")
             }

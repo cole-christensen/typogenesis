@@ -4,40 +4,101 @@ struct Sidebar: View {
     @EnvironmentObject var appState: AppState
 
     var body: some View {
-        List(selection: $appState.sidebarSelection) {
-            Section("Font") {
-                Label("Glyphs", systemImage: "character")
-                    .tag(AppState.SidebarItem.glyphs)
-                    .accessibilityIdentifier(AccessibilityID.Sidebar.glyphsItem)
+        VStack(spacing: 0) {
+            // Header with project name
+            if let project = appState.currentProject {
+                HStack {
+                    Image(systemName: "textformat")
+                        .foregroundColor(.accentColor)
+                    Text(project.name)
+                        .fontWeight(.semibold)
+                        .lineLimit(1)
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .background(Color(nsColor: .controlBackgroundColor))
 
-                Label("Metrics", systemImage: "ruler")
-                    .tag(AppState.SidebarItem.metrics)
-                    .accessibilityIdentifier(AccessibilityID.Sidebar.metricsItem)
-
-                Label("Kerning", systemImage: "arrow.left.and.right.text.vertical")
-                    .tag(AppState.SidebarItem.kerning)
-                    .accessibilityIdentifier(AccessibilityID.Sidebar.kerningItem)
-
-                Label("Preview", systemImage: "eye")
-                    .tag(AppState.SidebarItem.preview)
-                    .accessibilityIdentifier(AccessibilityID.Sidebar.previewItem)
-
-                Label("Variable Font", systemImage: "slider.horizontal.below.rectangle")
-                    .tag(AppState.SidebarItem.variable)
-                    .accessibilityIdentifier(AccessibilityID.Sidebar.variableItem)
+                Divider()
             }
 
-            Section("Create") {
-                Label("AI Generate", systemImage: "wand.and.stars")
-                    .tag(AppState.SidebarItem.generate)
-                    .accessibilityIdentifier(AccessibilityID.Sidebar.generateItem)
+            // Navigation List
+            List(selection: $appState.sidebarSelection) {
+                Section("Font") {
+                    SidebarItem(
+                        title: "Glyphs",
+                        icon: "character",
+                        tag: .glyphs,
+                        accessibilityID: AccessibilityID.Sidebar.glyphsItem
+                    )
 
-                Label("Handwriting", systemImage: "pencil.and.scribble")
-                    .tag(AppState.SidebarItem.handwriting)
-                    .accessibilityIdentifier(AccessibilityID.Sidebar.handwritingItem)
+                    SidebarItem(
+                        title: "Metrics",
+                        icon: "ruler",
+                        tag: .metrics,
+                        accessibilityID: AccessibilityID.Sidebar.metricsItem
+                    )
+
+                    SidebarItem(
+                        title: "Kerning",
+                        icon: "arrow.left.and.right.text.vertical",
+                        tag: .kerning,
+                        accessibilityID: AccessibilityID.Sidebar.kerningItem
+                    )
+
+                    SidebarItem(
+                        title: "Preview",
+                        icon: "eye",
+                        tag: .preview,
+                        accessibilityID: AccessibilityID.Sidebar.previewItem
+                    )
+
+                    SidebarItem(
+                        title: "Variable",
+                        icon: "slider.horizontal.below.rectangle",
+                        tag: .variable,
+                        accessibilityID: AccessibilityID.Sidebar.variableItem
+                    )
+                }
+
+                Section("Create") {
+                    SidebarItem(
+                        title: "AI Generate",
+                        icon: "wand.and.stars",
+                        tag: .generate,
+                        accessibilityID: AccessibilityID.Sidebar.generateItem
+                    )
+
+                    SidebarItem(
+                        title: "Handwriting",
+                        icon: "pencil.and.scribble",
+                        tag: .handwriting,
+                        accessibilityID: AccessibilityID.Sidebar.handwritingItem
+                    )
+
+                    SidebarItem(
+                        title: "Clone Font",
+                        icon: "doc.on.doc",
+                        tag: .clone,
+                        accessibilityID: AccessibilityID.Sidebar.cloneItem
+                    )
+                }
             }
+            .listStyle(.sidebar)
         }
-        .listStyle(.sidebar)
+    }
+}
+
+struct SidebarItem: View {
+    let title: String
+    let icon: String
+    let tag: AppState.SidebarItem
+    let accessibilityID: String
+
+    var body: some View {
+        Label(title, systemImage: icon)
+            .tag(tag)
+            .accessibilityIdentifier(accessibilityID)
     }
 }
 

@@ -2,12 +2,15 @@ import SwiftUI
 
 struct AddGlyphSheet: View {
     @Environment(\.dismiss) var dismiss
+    let existingGlyphs: Set<Character>
     let onAdd: (Character) -> Void
 
     @State private var inputMode: InputMode = .keyboard
     @State private var characterInput = ""
     @State private var unicodeInput = ""
     @State private var selectedPreset: CharacterPreset?
+    @State private var showDuplicateAlert = false
+    @State private var pendingCharacter: Character?
 
     enum InputMode: String, CaseIterable {
         case keyboard = "Type Character"
@@ -79,7 +82,23 @@ struct AddGlyphSheet: View {
             }
         }
         .padding(24)
-        .frame(width: 400, height: 350)
+        // Height increased from 350 to 520 to fit Basic Latin character grid without clipping
+        .frame(width: 400, height: 520)
+        .alert("Replace Existing Glyph?", isPresented: $showDuplicateAlert) {
+            Button("Replace", role: .destructive) {
+                if let character = pendingCharacter {
+                    onAdd(character)
+                    dismiss()
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                pendingCharacter = nil
+            }
+        } message: {
+            if let char = pendingCharacter {
+                Text("A glyph for '\(String(char))' already exists. Adding it will replace the existing glyph.")
+            }
+        }
     }
 
     private var keyboardInput: some View {
@@ -198,14 +217,17 @@ struct AddGlyphSheet: View {
         }
 
         if let character = char {
-            onAdd(character)
-            dismiss()
+            if existingGlyphs.contains(character) {
+                pendingCharacter = character
+                showDuplicateAlert = true
+            } else {
+                onAdd(character)
+                dismiss()
+            }
         }
     }
 }
 
 #Preview {
-    AddGlyphSheet { char in
-        print("Added: \(char)")
-    }
+    AddGlyphSheet(existingGlyphs: ["A", "B"]) { _ in }
 }

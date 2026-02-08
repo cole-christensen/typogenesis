@@ -8,8 +8,8 @@ struct KerningPredictorTests {
 
     // MARK: - Helper Functions
 
-    /// Creates a test project with glyphs for testing kerning
-    private func createTestProject(withCharacters chars: [Character]) -> FontProject {
+    /// Creates a test project with identical rectangular glyphs for testing kerning
+    private func createTestProjectWithIdenticalGlyphs(characters chars: [Character]) -> FontProject {
         var project = FontProject(name: "Test Font", family: "Test", style: "Regular")
 
         for char in chars {
@@ -92,10 +92,18 @@ struct KerningPredictorTests {
 
     // MARK: - Tests
 
-    @Test("KerningPredictor is always available (geometric fallback)")
-    func testPredictorIsAvailable() {
+    @Test("KerningPredictor isAvailable returns true (geometric fallback always works)")
+    @MainActor
+    func testPredictorIsAvailableWithoutModel() {
+        // Without AI models loaded, isAvailable should still return true
+        // because the geometric kerning fallback is always ready.
+        // This test verifies the fallback design: isAvailable == true even without CoreML models.
         let predictor = KerningPredictor()
-        #expect(predictor.isAvailable == true)
+        #expect(predictor.isAvailable, "isAvailable should be true even without CoreML models (geometric fallback)")
+
+        // Verify the AI model is NOT actually loaded (geometric fallback is what makes it available)
+        let kerningModel = ModelManager.shared.kerningNet
+        #expect(kerningModel == nil, "CoreML kerning model should NOT be loaded in test environment")
     }
 
     @Test("Predict kerning requires at least 2 glyphs")
@@ -108,7 +116,11 @@ struct KerningPredictorTests {
             _ = try await predictor.predictKerning(for: emptyProject)
             Issue.record("Should have thrown insufficientGlyphs error")
         } catch {
-            #expect(error is KerningPredictor.PredictorError)
+            if case KerningPredictor.PredictorError.insufficientGlyphs = error {
+                // Expected
+            } else {
+                Issue.record("Expected insufficientGlyphs error, got \(error)")
+            }
         }
 
         // Test with 1 glyph
@@ -123,46 +135,66 @@ struct KerningPredictorTests {
             _ = try await predictor.predictKerning(for: oneGlyphProject)
             Issue.record("Should have thrown insufficientGlyphs error")
         } catch {
-            #expect(error is KerningPredictor.PredictorError)
+            if case KerningPredictor.PredictorError.insufficientGlyphs = error {
+                // Expected
+            } else {
+                Issue.record("Expected insufficientGlyphs error, got \(error)")
+            }
         }
     }
 
-    @Test("Predict kerning generates pairs for simple project")
+    @Test("Predict kerning generates pairs for realistic glyphs")
     func testGeneratesPairs() async throws {
         let predictor = KerningPredictor()
-        let project = createTestProject(withCharacters: ["A", "V", "W", "a", "v"])
+        // Use realistic project with actual A and V shapes that need kerning
+        let project = createRealisticProject()
 
         let result = try await predictor.predictKerning(
             for: project,
             settings: .default
         )
 
-        // Should have generated some pairs
-        #expect(result.pairs.count >= 0)  // May be 0 if no significant kerning needed
-        #expect(result.predictionTime > 0)
-        #expect(result.confidence > 0)
+        // Verify confidence is in valid range [0, 1]
+        #expect(result.confidence >= 0 && result.confidence <= 1, "Confidence should be in valid range [0, 1]")
+
+        // Verify prediction took measurable time
+        #expect(result.predictionTime > 0, "Prediction should take measurable time")
+
+        // With realistic A, V, o shapes, the geometric kerning algorithm
+        // should detect that AV pair needs adjustment (A's diagonal + V's diagonal creates gap)
+        #expect(!result.pairs.isEmpty, "Should produce kerning pairs for A, V, o shapes")
     }
 
     @Test("Critical pairs only mode generates fewer pairs")
     func testCriticalPairsOnly() async throws {
         let predictor = KerningPredictor()
-        let project = createTestProject(withCharacters: Array("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"))
+        // Use the realistic project with actual shaped glyphs (triangular A, inverted-V, oval o)
+        // so the geometric kerning algorithm produces non-zero values for critical pairs.
+        // Identical square glyphs produce zero kerning for all pairs, making this test meaningless.
+        let project = createRealisticProject()
 
         // Generate all pairs
         let allPairsSettings = KerningPredictor.PredictionSettings(
+            minKerningValue: 1,
             onlyCriticalPairs: false
         )
         let allResult = try await predictor.predictKerning(for: project, settings: allPairsSettings)
 
         // Generate only critical pairs
         let criticalOnlySettings = KerningPredictor.PredictionSettings(
+            minKerningValue: 1,
             onlyCriticalPairs: true
         )
         let criticalResult = try await predictor.predictKerning(for: project, settings: criticalOnlySettings)
 
-        // Critical only should analyze fewer pairs (and likely generate fewer)
-        // This is a soft assertion since the results depend on the actual kerning values
-        #expect(criticalResult.predictionTime <= allResult.predictionTime * 2)
+        // Critical pairs mode should generate fewer or equal pairs than all-pairs mode
+        #expect(criticalResult.pairs.count <= allResult.pairs.count,
+                "Critical pairs mode should generate fewer or equal pairs than all-pairs mode")
+        #expect(criticalResult.pairs.count > 0, "Critical pairs should produce some pairs with realistic glyph shapes")
+
+        // Verify that critical pairs include known problematic pairs like AV
+        let hasAV = criticalResult.pairs.contains { $0.left == "A" && $0.right == "V" }
+        #expect(hasAV, "AV should be a critical pair that produces non-zero kerning with realistic shapes")
     }
 
     @Test("Minimum kerning value filters small adjustments")
@@ -205,7 +237,7 @@ struct KerningPredictorTests {
     @Test("Predict pair returns 0 for missing glyph")
     func testPredictPairWithMissingGlyph() async throws {
         let predictor = KerningPredictor()
-        let project = createTestProject(withCharacters: ["A"])
+        let project = createTestProjectWithIdenticalGlyphs(characters: ["A"])
 
         // "V" doesn't exist in project
         let kerning = try await predictor.predictPair(
@@ -217,7 +249,7 @@ struct KerningPredictorTests {
         #expect(kerning == 0)
     }
 
-    @Test("Spacing presets affect results")
+    @Test("Spacing presets produce tighter kerning for tight vs loose")
     func testSpacingPresets() async throws {
         let predictor = KerningPredictor()
         let project = createRealisticProject()
@@ -232,15 +264,26 @@ struct KerningPredictorTests {
             settings: .loose
         )
 
-        // Both should complete without error
-        #expect(tightResult.pairs.count >= 0)
-        #expect(looseResult.pairs.count >= 0)
+        // Both should produce valid results with pairs
+        #expect(!tightResult.pairs.isEmpty, "Tight preset should produce kerning pairs")
+        #expect(!looseResult.pairs.isEmpty, "Loose preset should produce kerning pairs")
+
+        // For each common pair, tight spacing should produce more negative (or equal) values
+        // compared to loose spacing. This is the core semantic guarantee of spacing presets.
+        for tightPair in tightResult.pairs {
+            if let loosePair = looseResult.pairs.first(where: {
+                $0.left == tightPair.left && $0.right == tightPair.right
+            }) {
+                #expect(tightPair.value <= loosePair.value,
+                    "Tight kerning should be <= loose for \(tightPair.left)\(tightPair.right): tight=\(tightPair.value) vs loose=\(loosePair.value)")
+            }
+        }
     }
 
     @Test("Include punctuation setting works")
     func testIncludePunctuationSetting() async throws {
         let predictor = KerningPredictor()
-        let project = createTestProject(withCharacters: ["A", "V", ".", ",", "!"])
+        let project = createTestProjectWithIdenticalGlyphs(characters: ["A", "V", ".", ",", "!"])
 
         // With punctuation
         let withPunctSettings = KerningPredictor.PredictionSettings(
@@ -254,15 +297,21 @@ struct KerningPredictorTests {
         )
         let withoutPunctResult = try await predictor.predictKerning(for: project, settings: withoutPunctSettings)
 
-        // Results should differ (or at least not crash)
-        #expect(withPunctResult.pairs.count >= 0)
-        #expect(withoutPunctResult.pairs.count >= 0)
+        // Both settings should produce valid results
+        #expect(withPunctResult.confidence >= 0 && withPunctResult.confidence <= 1)
+        #expect(withoutPunctResult.confidence >= 0 && withoutPunctResult.confidence <= 1)
+        // Without punctuation, no pairs involving punctuation marks should exist
+        let pairsWithoutPunct = withoutPunctResult.pairs.filter {
+            $0.left == "." || $0.left == "," || $0.left == "!" ||
+            $0.right == "." || $0.right == "," || $0.right == "!"
+        }
+        #expect(pairsWithoutPunct.isEmpty, "Without punctuation, no punctuation pairs should exist")
     }
 
     @Test("Include numbers setting works")
     func testIncludeNumbersSetting() async throws {
         let predictor = KerningPredictor()
-        let project = createTestProject(withCharacters: ["A", "1", "2", "3"])
+        let project = createTestProjectWithIdenticalGlyphs(characters: ["A", "1", "2", "3"])
 
         // With numbers
         let withNumbersSettings = KerningPredictor.PredictionSettings(
@@ -276,8 +325,13 @@ struct KerningPredictorTests {
         )
         let withoutNumbersResult = try await predictor.predictKerning(for: project, settings: withoutNumbersSettings)
 
-        // Results should be valid
-        #expect(withNumbersResult.pairs.count >= 0)
-        #expect(withoutNumbersResult.pairs.count >= 0)
+        // Both settings should produce valid results
+        #expect(withNumbersResult.confidence >= 0 && withNumbersResult.confidence <= 1)
+        #expect(withoutNumbersResult.confidence >= 0 && withoutNumbersResult.confidence <= 1)
+        // Without numbers, no pairs involving digits should exist
+        let pairsWithoutNumbers = withoutNumbersResult.pairs.filter {
+            $0.left.isNumber || $0.right.isNumber
+        }
+        #expect(pairsWithoutNumbers.isEmpty, "Without numbers, no number pairs should exist")
     }
 }

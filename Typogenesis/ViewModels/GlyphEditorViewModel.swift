@@ -14,6 +14,10 @@ final class GlyphEditorViewModel: ObservableObject {
     @Published var currentContourIndex: Int?
     @Published var pendingPoint: CGPoint?
 
+    // Error handling for path operations
+    @Published var operationError: String?
+    @Published var showOperationError = false
+
     private var undoStack: [Glyph] = []
     private var redoStack: [Glyph] = []
     private let maxUndoLevels = 50
@@ -147,34 +151,40 @@ final class GlyphEditorViewModel: ObservableObject {
         guard case let .controlIn(contourIndex, pointIndex, _) = hitResult else { return }
 
         glyph.outline.contours[contourIndex].points[pointIndex].controlIn = newPosition
-
-        // For symmetric points, mirror the control handle
-        let point = glyph.outline.contours[contourIndex].points[pointIndex]
-        if point.type == .symmetric, let _ = point.controlOut {
-            let dx = point.position.x - newPosition.x
-            let dy = point.position.y - newPosition.y
-            glyph.outline.contours[contourIndex].points[pointIndex].controlOut = CGPoint(
-                x: point.position.x + dx,
-                y: point.position.y + dy
-            )
-        }
+        mirrorSymmetricControlHandle(
+            at: (contourIndex, pointIndex),
+            movedHandle: newPosition,
+            mirrorTarget: \.controlOut
+        )
     }
 
     func moveControlOut(at hitResult: HitTestResult, to newPosition: CGPoint) {
         guard case let .controlOut(contourIndex, pointIndex, _) = hitResult else { return }
 
         glyph.outline.contours[contourIndex].points[pointIndex].controlOut = newPosition
+        mirrorSymmetricControlHandle(
+            at: (contourIndex, pointIndex),
+            movedHandle: newPosition,
+            mirrorTarget: \.controlIn
+        )
+    }
 
-        // For symmetric points, mirror the control handle
-        let point = glyph.outline.contours[contourIndex].points[pointIndex]
-        if point.type == .symmetric, let _ = point.controlIn {
-            let dx = point.position.x - newPosition.x
-            let dy = point.position.y - newPosition.y
-            glyph.outline.contours[contourIndex].points[pointIndex].controlIn = CGPoint(
-                x: point.position.x + dx,
-                y: point.position.y + dy
-            )
-        }
+    /// Mirrors a control handle for symmetric points.
+    /// When one control handle moves, the opposite handle mirrors around the anchor point.
+    private func mirrorSymmetricControlHandle(
+        at location: (contourIndex: Int, pointIndex: Int),
+        movedHandle newPosition: CGPoint,
+        mirrorTarget: WritableKeyPath<PathPoint, CGPoint?>
+    ) {
+        let point = glyph.outline.contours[location.contourIndex].points[location.pointIndex]
+        guard point.type == .symmetric, point[keyPath: mirrorTarget] != nil else { return }
+
+        let dx = point.position.x - newPosition.x
+        let dy = point.position.y - newPosition.y
+        glyph.outline.contours[location.contourIndex].points[location.pointIndex][keyPath: mirrorTarget] = CGPoint(
+            x: point.position.x + dx,
+            y: point.position.y + dy
+        )
     }
 
     // MARK: - Point Operations
@@ -530,20 +540,30 @@ final class GlyphEditorViewModel: ObservableObject {
         return indices
     }
 
-    /// Union selected contours
-    func unionSelectedContours() {
+    // MARK: - Boolean Operations (Unified Implementation)
+
+    /// Performs a boolean path operation on selected contours
+    /// - Parameters:
+    ///   - operation: The type of boolean operation to perform
+    ///   - requireExactlyTwo: If true, requires exactly 2 selected contours (for subtract)
+    private func performBooleanOperation(
+        _ operation: PathOperations.Operation,
+        requireExactlyTwo: Bool = false
+    ) {
         let indices = Array(selectedContourIndices).sorted()
-        guard indices.count >= 2 else { return }
+        let minCount = 2
+        let maxCount = requireExactlyTwo ? 2 : Int.max
+
+        guard indices.count >= minCount && indices.count <= maxCount else { return }
         saveStateForUndo()
 
         do {
-            // Get first two selected contours
             let outline1 = GlyphOutline(contours: [glyph.outline.contours[indices[0]]])
             var resultOutline = outline1
 
             for i in 1..<indices.count {
                 let outline2 = GlyphOutline(contours: [glyph.outline.contours[indices[i]]])
-                resultOutline = try PathOperations.perform(.union, on: resultOutline, with: outline2)
+                resultOutline = try PathOperations.perform(operation, on: resultOutline, with: outline2)
             }
 
             // Remove original contours (in reverse order to maintain indices)
@@ -556,95 +576,30 @@ final class GlyphEditorViewModel: ObservableObject {
             selectedPointIDs.removeAll()
 
         } catch {
-            print("Union operation failed: \(error)")
+            operationError = "\(operation.displayName) operation failed: \(error.localizedDescription)"
+            showOperationError = true
             undo()
         }
+    }
+
+    /// Union selected contours
+    func unionSelectedContours() {
+        performBooleanOperation(.union)
     }
 
     /// Subtract second selected contour from first
     func subtractSelectedContours() {
-        let indices = Array(selectedContourIndices).sorted()
-        guard indices.count == 2 else { return }
-        saveStateForUndo()
-
-        do {
-            let outline1 = GlyphOutline(contours: [glyph.outline.contours[indices[0]]])
-            let outline2 = GlyphOutline(contours: [glyph.outline.contours[indices[1]]])
-
-            let resultOutline = try PathOperations.perform(.subtract, on: outline1, with: outline2)
-
-            // Remove original contours (in reverse order)
-            glyph.outline.contours.remove(at: indices[1])
-            glyph.outline.contours.remove(at: indices[0])
-
-            // Add result contours
-            glyph.outline.contours.append(contentsOf: resultOutline.contours)
-            selectedPointIDs.removeAll()
-
-        } catch {
-            print("Subtract operation failed: \(error)")
-            undo()
-        }
+        performBooleanOperation(.subtract, requireExactlyTwo: true)
     }
 
     /// Intersect selected contours
     func intersectSelectedContours() {
-        let indices = Array(selectedContourIndices).sorted()
-        guard indices.count >= 2 else { return }
-        saveStateForUndo()
-
-        do {
-            let outline1 = GlyphOutline(contours: [glyph.outline.contours[indices[0]]])
-            var resultOutline = outline1
-
-            for i in 1..<indices.count {
-                let outline2 = GlyphOutline(contours: [glyph.outline.contours[indices[i]]])
-                resultOutline = try PathOperations.perform(.intersect, on: resultOutline, with: outline2)
-            }
-
-            // Remove original contours (in reverse order)
-            for index in indices.reversed() {
-                glyph.outline.contours.remove(at: index)
-            }
-
-            // Add result contours
-            glyph.outline.contours.append(contentsOf: resultOutline.contours)
-            selectedPointIDs.removeAll()
-
-        } catch {
-            print("Intersect operation failed: \(error)")
-            undo()
-        }
+        performBooleanOperation(.intersect)
     }
 
     /// XOR selected contours (exclude overlapping areas)
     func xorSelectedContours() {
-        let indices = Array(selectedContourIndices).sorted()
-        guard indices.count >= 2 else { return }
-        saveStateForUndo()
-
-        do {
-            let outline1 = GlyphOutline(contours: [glyph.outline.contours[indices[0]]])
-            var resultOutline = outline1
-
-            for i in 1..<indices.count {
-                let outline2 = GlyphOutline(contours: [glyph.outline.contours[indices[i]]])
-                resultOutline = try PathOperations.perform(.xor, on: resultOutline, with: outline2)
-            }
-
-            // Remove original contours (in reverse order)
-            for index in indices.reversed() {
-                glyph.outline.contours.remove(at: index)
-            }
-
-            // Add result contours
-            glyph.outline.contours.append(contentsOf: resultOutline.contours)
-            selectedPointIDs.removeAll()
-
-        } catch {
-            print("XOR operation failed: \(error)")
-            undo()
-        }
+        performBooleanOperation(.xor)
     }
 
     /// Remove overlapping regions within all contours
@@ -657,7 +612,8 @@ final class GlyphEditorViewModel: ObservableObject {
             glyph.outline = resultOutline
             selectedPointIDs.removeAll()
         } catch {
-            print("Remove overlaps failed: \(error)")
+            operationError = "Remove overlaps failed: \(error.localizedDescription)"
+            showOperationError = true
             undo()
         }
     }
@@ -683,7 +639,8 @@ final class GlyphEditorViewModel: ObservableObject {
             glyph.outline = try PathOperations.offset(glyph.outline, by: amount)
             selectedPointIDs.removeAll()
         } catch {
-            print("Offset operation failed: \(error)")
+            operationError = "Offset operation failed: \(error.localizedDescription)"
+            showOperationError = true
             undo()
         }
     }
