@@ -94,5 +94,9 @@ ENV/
 *.mlmodelc
 *.mlpackage
 
+# Python tools
+.pytest_cache/
+.ruff_cache/
+
 # Test artifacts
 *.xcresult

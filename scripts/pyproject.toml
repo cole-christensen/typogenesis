@@ -1,0 +1,45 @@
+[project]
+name = "typogenesis-ml"
+version = "0.1.0"
+description = "ML training infrastructure for Typogenesis font generation"
+requires-python = ">=3.11"
+dependencies = [
+    "torch>=2.2",
+    "torchvision>=0.17",
+    "numpy>=1.26",
+    "Pillow>=10.0",
+    "fonttools[woff]>=4.47",
+    "einops>=0.7",
+    "coremltools>=7.0",
+    "onnx>=1.15",
+    "wandb>=0.16",
+    "tensorboard>=2.15",
+    "tqdm>=4.66",
+    "scipy>=1.12",
+    "scikit-learn>=1.4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-cov", "ruff>=0.2"]
+efficientnet = ["timm>=0.9"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "gpu: marks tests that require GPU",
+    "data: marks tests that require downloaded font data",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = ["Makefile"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
+ignore = ["E501"]
