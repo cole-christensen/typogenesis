@@ -118,3 +118,41 @@ def tmp_output_dir(tmp_path):
     output_dir = tmp_path / "test_outputs"
     output_dir.mkdir()
     return output_dir
+
+
+# ─── Data Pipeline Fixtures ──────────────────────────────────────────
+
+# System fonts known to exist on macOS with full A-Z, a-z, 0-9 coverage
+_SYSTEM_FONT_CANDIDATES = [
+    Path("/System/Library/Fonts/Supplemental/Arial.ttf"),
+    Path("/System/Library/Fonts/Supplemental/Courier New.ttf"),
+    Path("/System/Library/Fonts/Supplemental/Times New Roman.ttf"),
+    Path("/System/Library/Fonts/Supplemental/Verdana.ttf"),
+    Path("/System/Library/Fonts/Supplemental/Trebuchet MS.ttf"),
+]
+
+
+@pytest.fixture
+def system_font_path():
+    """Path to a system font with full Latin character coverage.
+
+    Skips if no suitable system font is found (e.g., on Linux CI).
+    """
+    for candidate in _SYSTEM_FONT_CANDIDATES:
+        if candidate.exists():
+            return candidate
+    pytest.skip("No suitable system font found for testing")
+
+
+@pytest.fixture
+def extracted_font_dir(system_font_path, tmp_path):
+    """A pre-extracted font directory for testing manifest builders.
+
+    Runs extract_font on a system font and returns the resulting directory.
+    """
+    from data.extract_glyphs import extract_font
+
+    result = extract_font(system_font_path, tmp_path, image_sizes=(64,))
+    if result is None:
+        pytest.skip("Could not extract system font")
+    return tmp_path / result["file_hash"]
