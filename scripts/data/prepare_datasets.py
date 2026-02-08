@@ -54,14 +54,30 @@ def split_by_font_family(
         if not meta_path.exists():
             continue
         meta = json.loads(meta_path.read_text())
-        # Extract family name from font_name (e.g. "Roboto Regular" -> "Roboto")
+        # Extract family key for grouping related fonts together
         font_name = meta.get("font_name", font_dir.name)
-        # Use font_path parent as family grouping key
         font_path = meta.get("font_path", "")
+
+        # Try path-based grouping: if parent dir isn't a generic folder, use it
+        # (works for Google Fonts: /fonts/roboto/Regular.ttf → "roboto")
+        generic_dirs = {"Fonts", "Supplemental", "fonts", "ofl", "apache", ""}
         if font_path:
-            family_key = Path(font_path).parent.name
+            parent_name = Path(font_path).parent.name
+            if parent_name not in generic_dirs:
+                family_key = parent_name
+            else:
+                # Fallback: strip style suffixes from font name
+                style_suffixes = {"Bold", "Italic", "Regular", "Light", "Medium", "Thin",
+                                  "Heavy", "Black", "Condensed", "Narrow", "Wide",
+                                  "Oblique", "Roman", "Plain"}
+                parts = font_name.split()
+                family_parts = []
+                for part in parts:
+                    if part in style_suffixes:
+                        break
+                    family_parts.append(part)
+                family_key = " ".join(family_parts) if family_parts else font_name
         else:
-            # Fallback: use first word of font name
             family_key = font_name.split()[0] if font_name else font_dir.name
         families[family_key].append(font_dir)
 

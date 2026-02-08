@@ -100,3 +100,10 @@ ENV/
 
 # Test artifacts
 *.xcresult
+
+# ML training data and outputs (large, regenerable)
+scripts/data/extracted/
+scripts/outputs/
+
+# Profiling
+*.profraw
