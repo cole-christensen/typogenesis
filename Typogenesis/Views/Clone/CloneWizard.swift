@@ -147,8 +147,7 @@ struct CloneWizard: View {
             .frame(height: 200)
             .accessibilityIdentifier(AccessibilityID.Clone.uploadArea)
             .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-                handleDrop(providers: providers)
-                return true
+                return handleDrop(providers: providers)
             }
 
             if let error = viewModel.errorMessage {
@@ -530,8 +529,8 @@ struct CloneWizard: View {
     private func selectReferenceFont() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [
-            UTType(filenameExtension: "ttf")!,
-            UTType(filenameExtension: "otf")!
+            UTType(filenameExtension: "ttf") ?? .data,
+            UTType(filenameExtension: "otf") ?? .data
         ]
         panel.allowsMultipleSelection = false
         panel.message = "Select a font to clone"
@@ -544,8 +543,8 @@ struct CloneWizard: View {
         }
     }
 
-    private func handleDrop(providers: [NSItemProvider]) {
-        guard let provider = providers.first else { return }
+    private func handleDrop(providers: [NSItemProvider]) -> Bool {
+        guard let provider = providers.first else { return false }
 
         provider.loadItem(forTypeIdentifier: "public.file-url") { item, _ in
             guard let data = item as? Data,
@@ -565,6 +564,7 @@ struct CloneWizard: View {
                 await viewModel.loadReferenceFont(from: url)
             }
         }
+        return true
     }
 
     private func applyToProject() {

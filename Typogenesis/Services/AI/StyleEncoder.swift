@@ -93,8 +93,18 @@ final class StyleEncoder: @unchecked Sendable {
         "n", "o", "H", "O", "a", "g", "e", "p", "d", "b"
     ]
 
-    /// Cache for computed embeddings (key: hash of image data, value: embedding)
-    private var embeddingCache: [Int: [Float]] = [:]
+    /// Wrapper class for NSCache (requires reference type values)
+    private final class EmbeddingWrapper {
+        let embedding: [Float]
+        init(_ embedding: [Float]) { self.embedding = embedding }
+    }
+
+    /// Cache for computed embeddings with automatic eviction (key: hash of image data)
+    private let embeddingCache: NSCache<NSNumber, EmbeddingWrapper> = {
+        let cache = NSCache<NSNumber, EmbeddingWrapper>()
+        cache.countLimit = EncodingParams.maxCacheSize
+        return cache
+    }()
 
     /// Lock for thread-safe cache access
     private let cacheLock = NSLock()
@@ -740,31 +750,21 @@ final class StyleEncoder: @unchecked Sendable {
     private func getCachedEmbedding(for key: Int) -> [Float]? {
         cacheLock.lock()
         defer { cacheLock.unlock() }
-        return embeddingCache[key]
+        return embeddingCache.object(forKey: NSNumber(value: key))?.embedding
     }
 
-    /// Cache embedding with size limit enforcement
+    /// Cache embedding (NSCache handles eviction automatically via countLimit)
     private func cacheEmbedding(_ embedding: [Float], for key: Int) {
         cacheLock.lock()
         defer { cacheLock.unlock() }
-
-        // Enforce cache size limit
-        if embeddingCache.count >= EncodingParams.maxCacheSize {
-            // Remove arbitrary entries (Dictionary has no ordering; this is not LRU eviction)
-            let keysToRemove = Array(embeddingCache.keys.prefix(EncodingParams.maxCacheSize / 2))
-            for k in keysToRemove {
-                embeddingCache.removeValue(forKey: k)
-            }
-        }
-
-        embeddingCache[key] = embedding
+        embeddingCache.setObject(EmbeddingWrapper(embedding), forKey: NSNumber(value: key))
     }
 
     /// Clear the embedding cache
     func clearCache() {
         cacheLock.lock()
         defer { cacheLock.unlock() }
-        embeddingCache.removeAll()
+        embeddingCache.removeAllObjects()
     }
 
     private func averageEmbeddings(_ embeddings: [[Float]]) -> [Float] {

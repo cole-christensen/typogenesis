@@ -185,21 +185,13 @@ final class KerningPredictor: Sendable {
             return 0
         }
 
-        let hasModel = await MainActor.run { ModelManager.shared.kerningNet != nil }
-        if hasModel {
-            return try await predictPairWithModel(
-                left: left,
-                right: right,
-                project: project
-            ) ?? 0
-        } else {
-            return calculateGeometricKerning(
-                left: left,
-                right: right,
-                project: project,
-                settings: .default
-            )
-        }
+        // predictPairWithModel already checks model availability internally
+        // and falls back to geometric calculation, avoiding a TOCTOU race
+        return try await predictPairWithModel(
+            left: left,
+            right: right,
+            project: project
+        ) ?? 0
     }
 
     /// Check if prediction is available
@@ -227,7 +219,7 @@ final class KerningPredictor: Sendable {
     ) -> [(Character, Character)] {
         let maxPairs = 10000
         var pairs: [(Character, Character)] = []
-        let characters = Array(project.glyphs.keys)
+        let characters = Array(project.glyphs.keys).sorted(by: { String($0) < String($1) })
 
         outer: for left in characters {
             for right in characters {

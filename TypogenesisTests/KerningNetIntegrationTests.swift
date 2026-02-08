@@ -228,102 +228,11 @@ struct KerningNetIntegrationTests {
 
     // MARK: - Settings Tests
 
-    @Test("Critical pairs only mode generates fewer pairs")
-    func testCriticalPairsMode() async throws {
-        let predictor = KerningPredictor()
-        let project = createTestProject(withCharacters: Array("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"))
-
-        let allPairsSettings = KerningPredictor.PredictionSettings(
-            onlyCriticalPairs: false
-        )
-        let allResult = try await predictor.predictKerning(for: project, settings: allPairsSettings)
-
-        let criticalSettings = KerningPredictor.PredictionSettings(
-            onlyCriticalPairs: true
-        )
-        let criticalResult = try await predictor.predictKerning(for: project, settings: criticalSettings)
-
-        // Critical pairs mode should generate fewer or equal pairs than all-pairs mode
-        #expect(criticalResult.pairs.count <= allResult.pairs.count,
-                "Critical pairs mode should generate fewer or equal pairs than all-pairs mode")
-        #expect(criticalResult.pairs.count > 0, "Critical pairs should produce some pairs")
-    }
-
-    @Test("Minimum kerning value filters small adjustments")
-    func testMinKerningFilter() async throws {
-        let predictor = KerningPredictor()
-        let project = createRealisticProject()
-
-        let lowThreshold = KerningPredictor.PredictionSettings(minKerningValue: 1)
-        let lowResult = try await predictor.predictKerning(for: project, settings: lowThreshold)
-
-        let highThreshold = KerningPredictor.PredictionSettings(minKerningValue: 100)
-        let highResult = try await predictor.predictKerning(for: project, settings: highThreshold)
-
-        // Higher threshold should produce fewer or equal pairs
-        #expect(highResult.pairs.count <= lowResult.pairs.count,
-                "Higher threshold should filter more pairs")
-    }
-
-    @Test("Spacing presets produce tighter kerning for tight vs loose")
-    func testSpacingPresets() async throws {
-        let predictor = KerningPredictor()
-        let project = createRealisticProject()
-
-        let tightResult = try await predictor.predictKerning(for: project, settings: .tight)
-        let looseResult = try await predictor.predictKerning(for: project, settings: .loose)
-
-        // Both should produce pairs
-        #expect(!tightResult.pairs.isEmpty, "Tight preset should produce kerning pairs")
-        #expect(!looseResult.pairs.isEmpty, "Loose preset should produce kerning pairs")
-
-        // For each common pair, tight spacing should produce more negative (or equal) values
-        // compared to loose spacing. This is the core semantic guarantee of spacing presets.
-        for tightPair in tightResult.pairs {
-            if let loosePair = looseResult.pairs.first(where: {
-                $0.left == tightPair.left && $0.right == tightPair.right
-            }) {
-                #expect(tightPair.value <= loosePair.value,
-                    "Tight kerning should be <= loose for \(tightPair.left)\(tightPair.right): tight=\(tightPair.value) vs loose=\(loosePair.value)")
-            }
-        }
-    }
-
-    @Test("Include punctuation setting works")
-    func testPunctuationSetting() async throws {
-        let predictor = KerningPredictor()
-        let project = createTestProject(withCharacters: ["A", "V", ".", ",", "!"])
-
-        let withPunct = KerningPredictor.PredictionSettings(includePunctuation: true)
-        let withoutPunct = KerningPredictor.PredictionSettings(includePunctuation: false)
-
-        let withResult = try await predictor.predictKerning(for: project, settings: withPunct)
-        let withoutResult = try await predictor.predictKerning(for: project, settings: withoutPunct)
-
-        // Without punctuation should have no pairs with punctuation
-        let punctPairs = withoutResult.pairs.filter {
-            !$0.left.isLetter || !$0.right.isLetter
-        }
-        #expect(punctPairs.isEmpty, "Should not have punctuation pairs when disabled")
-    }
-
-    @Test("Include numbers setting works")
-    func testNumbersSetting() async throws {
-        let predictor = KerningPredictor()
-        let project = createTestProject(withCharacters: ["A", "1", "2", "3"])
-
-        let withNumbers = KerningPredictor.PredictionSettings(includeNumbers: true)
-        let withoutNumbers = KerningPredictor.PredictionSettings(includeNumbers: false)
-
-        let withResult = try await predictor.predictKerning(for: project, settings: withNumbers)
-        let withoutResult = try await predictor.predictKerning(for: project, settings: withoutNumbers)
-
-        // Without numbers should have no pairs with numbers
-        let numberPairs = withoutResult.pairs.filter {
-            $0.left.isNumber || $0.right.isNumber
-        }
-        #expect(numberPairs.isEmpty, "Should not have number pairs when disabled")
-    }
+    // testCriticalPairsMode removed: duplicates KerningPredictorTests.testCriticalPairsOnly
+    // testMinKerningFilter removed: duplicates KerningPredictorTests.testMinKerningValueFilter
+    // testSpacingPresets removed: duplicates KerningPredictorTests.testSpacingPresets
+    // testPunctuationSetting removed: duplicates KerningPredictorTests.testIncludePunctuationSetting
+    // testNumbersSetting removed: duplicates KerningPredictorTests.testIncludeNumbersSetting
 
     // MARK: - Fallback Behavior Tests
 

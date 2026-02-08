@@ -154,6 +154,12 @@ final class GlyphGenerator: @unchecked Sendable {
         _generationStats.fallbackGenerations += 1
     }
 
+    private func recordAI() {
+        statsLock.lock()
+        defer { statsLock.unlock() }
+        _generationStats.aiGenerations += 1
+    }
+
     private func recordTemplate() {
         statsLock.lock()
         defer { statsLock.unlock() }
@@ -680,15 +686,12 @@ final class GlyphGenerator: @unchecked Sendable {
             style = s
         case .completePartial(_, let s):
             style = s
-        case .variation(let base, _):
+        case .variation(_, _):
             // Extract style from base glyph metrics
             style = StyleEncoder.FontStyle.default
-            // Could enhance by analyzing base glyph
-            _ = base  // Acknowledge usage
-        case .interpolate(let glyphA, let glyphB, let t):
+        case .interpolate(_, _, let t):
             // Interpolate styles (use default as fallback)
             style = styleEncoder.interpolate(.default, .default, t: t)
-            _ = (glyphA, glyphB)  // Acknowledge usage
         }
 
         // Create outline based on mode

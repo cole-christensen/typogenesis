@@ -31,9 +31,7 @@ Example with WandB logging:
 
 import argparse
 import logging
-import os
 import random
-import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -46,8 +44,12 @@ from torch.amp import GradScaler, autocast
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader, Dataset
-from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
+
+try:
+    from torch.utils.tensorboard import SummaryWriter
+except ImportError:
+    SummaryWriter = None
 
 from .config import (
     AugmentationConfig,
@@ -334,10 +336,14 @@ class Trainer:
         )
 
         # TensorBoard writer
-        config.paths.log_dir.mkdir(parents=True, exist_ok=True)
-        self.writer = SummaryWriter(
-            log_dir=config.paths.log_dir / config.experiment_name
-        )
+        if SummaryWriter is not None:
+            config.paths.log_dir.mkdir(parents=True, exist_ok=True)
+            self.writer = SummaryWriter(
+                log_dir=config.paths.log_dir / config.experiment_name
+            )
+        else:
+            self.writer = None
+            logger.warning("TensorBoard not available; skipping TensorBoard logging")
 
         # Training state
         self.epoch = 0
@@ -411,8 +417,9 @@ class Trainer:
                     f"Epoch {self.epoch} [{batch_idx}/{len(self.train_loader)}] "
                     f"Loss: {loss.item():.4f} LR: {lr:.2e}"
                 )
-                self.writer.add_scalar("train/loss", loss.item(), self.global_step)
-                self.writer.add_scalar("train/lr", lr, self.global_step)
+                if self.writer is not None:
+                    self.writer.add_scalar("train/loss", loss.item(), self.global_step)
+                    self.writer.add_scalar("train/lr", lr, self.global_step)
 
                 if self.wandb_run:
                     import wandb
@@ -569,8 +576,9 @@ class Trainer:
         }
 
         # Log metrics
-        for key, value in metrics.items():
-            self.writer.add_scalar(key, value, self.epoch)
+        if self.writer is not None:
+            for key, value in metrics.items():
+                self.writer.add_scalar(key, value, self.epoch)
 
         if self.wandb_run:
             import wandb
@@ -959,9 +967,10 @@ def main() -> None:
     )
 
     # Override val subset's dataset transform so validation does not use
-    # training augmentations. We wrap the subset to apply val_transform.
+    # training augmentations. We wrap the subset to apply val_transform
+    # in a thread-safe way (no mutation of the shared dataset).
     class _TransformOverrideSubset(torch.utils.data.Dataset):
-        """Wraps a Subset to override the underlying dataset's transform."""
+        """Wraps a Subset to apply a different transform without mutating the shared dataset."""
 
         def __init__(self, subset, transform):
             self.subset = subset
@@ -971,14 +980,32 @@ def main() -> None:
             return len(self.subset)
 
         def __getitem__(self, idx):
-            # Temporarily swap the transform on the underlying dataset
-            original_transform = self.subset.dataset.transform
-            self.subset.dataset.transform = self.transform
-            try:
-                item = self.subset[idx]
-            finally:
-                self.subset.dataset.transform = original_transform
-            return item
+            from PIL import Image as _Image
+
+            # Resolve the real index and access the underlying dataset directly
+            real_idx = self.subset.indices[idx]
+            dataset = self.subset.dataset
+
+            font_dir = dataset.font_dirs[real_idx]
+            glyph_files = dataset.font_glyphs[font_dir.name]
+
+            # Sample random glyphs from this font
+            selected = random.sample(
+                glyph_files, min(dataset.glyphs_per_font, len(glyph_files))
+            )
+
+            glyphs = []
+            for glyph_path in selected:
+                img = _Image.open(glyph_path)
+                if self.transform:
+                    img = self.transform(img)
+                glyphs.append(img)
+
+            # Pad if we don't have enough glyphs
+            while len(glyphs) < dataset.glyphs_per_font:
+                glyphs.append(glyphs[-1].clone())
+
+            return torch.stack(glyphs), real_idx
 
     val_dataset = _TransformOverrideSubset(val_dataset, val_transform)
 

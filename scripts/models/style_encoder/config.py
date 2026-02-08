@@ -91,14 +91,14 @@ class LossConfig:
     """Configuration for contrastive loss functions.
 
     Attributes:
-        loss_type: Type of contrastive loss. Supported: "nt_xent", "triplet", "infonce"
+        loss_type: Type of contrastive loss. Supported: "nt_xent", "triplet", "infonce", "supcon"
         temperature: Temperature parameter for NT-Xent and InfoNCE losses
         triplet_margin: Margin for triplet loss
         hard_negative_mining: Whether to use hard negative mining for triplet loss
         label_smoothing: Label smoothing factor (0 to disable)
     """
 
-    loss_type: Literal["nt_xent", "triplet", "infonce"] = "nt_xent"
+    loss_type: Literal["nt_xent", "triplet", "infonce", "supcon"] = "nt_xent"
     temperature: float = 0.07
     triplet_margin: float = 0.5
     hard_negative_mining: bool = True
@@ -106,10 +106,10 @@ class LossConfig:
 
     def __post_init__(self) -> None:
         """Validate configuration after initialization."""
-        if self.loss_type not in ("nt_xent", "triplet", "infonce"):
+        if self.loss_type not in ("nt_xent", "triplet", "infonce", "supcon"):
             raise ValueError(
                 f"Unsupported loss_type: {self.loss_type}. "
-                "Supported: 'nt_xent', 'triplet', 'infonce'"
+                "Supported: 'nt_xent', 'triplet', 'infonce', 'supcon'"
             )
         if self.temperature <= 0:
             raise ValueError(f"temperature must be positive, got {self.temperature}")

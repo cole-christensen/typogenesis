@@ -517,8 +517,8 @@ final class StrokeBuilder: Sendable {
                 )
 
                 point.controlIn = CGPoint(
-                    x: curr.x - cos(avgDir + .pi) * handleLength,
-                    y: curr.y - sin(avgDir + .pi) * handleLength
+                    x: curr.x + cos(avgDir) * handleLength,
+                    y: curr.y + sin(avgDir) * handleLength
                 )
                 point.controlOut = CGPoint(
                     x: curr.x + cos(avgDir + .pi) * handleLength,

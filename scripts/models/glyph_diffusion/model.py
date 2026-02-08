@@ -17,7 +17,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
-from config import ModelConfig
+from .config import ModelConfig
 
 
 class SinusoidalTimeEmbedding(nn.Module):
@@ -374,8 +374,10 @@ class UNet(nn.Module):
         self.time_mlp = TimeEmbedMLP(config.time_embed_dim, config.time_embed_dim)
 
         # Character embedding (added to time embedding)
+        # num_characters + 1 to accommodate the null class index used for
+        # classifier-free guidance (index num_characters = unconditional)
         self.char_embed = CharacterEmbedding(
-            config.num_characters, config.char_embed_dim
+            config.num_characters + 1, config.char_embed_dim
         )
         self.char_proj = nn.Linear(config.char_embed_dim, config.time_embed_dim)
 
@@ -446,8 +448,8 @@ class UNet(nn.Module):
             level_blocks = nn.ModuleList()
 
             for block_idx in range(config.num_res_blocks + 1):
-                # Skip connection doubles channels for first block of each level
-                skip_ch = ch if block_idx > 0 else ch
+                # Skip from encoder level has ch channels
+                skip_ch = ch
                 in_ch = prev_channels + skip_ch if block_idx == 0 else ch
 
                 level_blocks.append(
@@ -475,13 +477,17 @@ class UNet(nn.Module):
                 self.decoder_upsamples.append(nn.Identity())
 
         # Output
+        # After decoder, we concatenate the initial conv_in skip (base_channels)
+        # with the decoder output (channels[0]), so input is channels[0] + base_channels
         self.norm_out = nn.GroupNorm(8, config.base_channels)
         self.conv_out = nn.Conv2d(
             config.base_channels, config.out_channels, kernel_size=3, padding=1
         )
 
-        # Final projection to base channels
-        self.final_proj = nn.Conv2d(channels[0], config.base_channels, kernel_size=1)
+        # Final projection to base channels, accounting for initial skip concatenation
+        self.final_proj = nn.Conv2d(
+            channels[0] + config.base_channels, config.base_channels, kernel_size=1
+        )
 
     def forward(
         self,
@@ -557,6 +563,14 @@ class UNet(nn.Module):
                 else:  # AttentionBlock
                     h = block(h)
             h = upsample(h)
+
+        # Consume the initial conv_in skip connection
+        initial_skip = skips.pop()
+        if h.shape[2:] != initial_skip.shape[2:]:
+            initial_skip = F.interpolate(
+                initial_skip, size=h.shape[2:], mode="nearest"
+            )
+        h = torch.cat([h, initial_skip], dim=1)
 
         # Output
         h = self.final_proj(h)

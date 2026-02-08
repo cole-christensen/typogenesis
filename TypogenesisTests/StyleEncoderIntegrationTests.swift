@@ -119,6 +119,16 @@ struct StyleEncoderIntegrationTests {
         #expect(style.widthRatio >= 0 && style.widthRatio <= 2, "widthRatio should be reasonable")
         #expect(style.roundness >= 0 && style.roundness <= 1, "roundness should be 0-1")
         #expect(style.regularity >= 0 && style.regularity <= 1, "regularity should be 0-1")
+
+        // Tighter assertions for geometric fallback with identical rectangular glyphs:
+        // All points are corners, so roundness must be 0
+        #expect(style.roundness == 0, "All-corner rectangular glyphs should have roundness 0, got \(style.roundness)")
+        // Identical glyphs have zero stroke contrast
+        #expect(style.strokeContrast == 0, "Identical glyphs should have 0 stroke contrast, got \(style.strokeContrast)")
+        // Identical rectangular glyphs should have very high regularity
+        #expect(style.regularity > 0.95, "Identical rectangular glyphs should have high regularity, got \(style.regularity)")
+        // xHeightRatio = 500/700 ≈ 0.714
+        #expect(style.xHeightRatio > 0.7 && style.xHeightRatio < 0.72, "xHeightRatio should be ~0.714 (500/700), got \(style.xHeightRatio)")
     }
 
     @Test("extractStyle classifies square glyphs as sans-serif")

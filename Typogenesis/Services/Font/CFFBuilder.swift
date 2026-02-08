@@ -50,8 +50,8 @@ struct CFFBuilder {
         // --- Pass 1: Build all sections except Top DICT to determine sizes ---
 
         let header = buildHeader()
-        let nameIndex = buildNameIndex(name: project.family)
-        let stringIndex = buildStringIndex(project: project)
+        let nameIndex = try buildNameIndex(name: project.family)
+        let stringIndex = try buildStringIndex(project: project)
         let globalSubrIndex = try buildIndex([])
         let charStrings = try buildCharStrings(
             glyphOrder: glyphOrder,
@@ -267,11 +267,9 @@ struct CFFBuilder {
 
     // MARK: - Name INDEX
 
-    private static func buildNameIndex(name: String) -> Data {
+    private static func buildNameIndex(name: String) throws -> Data {
         let nameData = Data(name.utf8)
-        // buildNameIndex is only called with a single item, so count is always 1.
-        // Force-try is safe here because count == 1 can never exceed UInt16.max.
-        return try! buildIndex([nameData])
+        return try buildIndex([nameData])
     }
 
     // MARK: - Top DICT
@@ -330,7 +328,7 @@ struct CFFBuilder {
 
     // MARK: - String INDEX
 
-    private static func buildStringIndex(project: FontProject) -> Data {
+    private static func buildStringIndex(project: FontProject) throws -> Data {
         // Standard strings + custom strings
         let strings = [
             "1.0",                    // SID 391 - version
@@ -340,8 +338,7 @@ struct CFFBuilder {
         ]
 
         let stringData = strings.map { Data($0.utf8) }
-        // Force-try is safe: 4 items can never exceed UInt16.max.
-        return try! buildIndex(stringData)
+        return try buildIndex(stringData)
     }
 
     // MARK: - CharStrings
@@ -397,8 +394,8 @@ struct CFFBuilder {
 
             // moveto first point — relative to current point (B1 fix)
             if let first = points.first {
-                let targetX = Int(first.position.x)
-                let targetY = Int(first.position.y)
+                let targetX = Int(first.position.x.rounded())
+                let targetY = Int(first.position.y.rounded())
                 let dx = targetX - currentX
                 let dy = targetY - currentY
                 try encodeCharStringNumber(&cs, value: dx)
@@ -415,12 +412,12 @@ struct CFFBuilder {
 
                 if let ctrlOut = prev.controlOut, let ctrlIn = curr.controlIn {
                     // Cubic bezier curve — all deltas relative to current point
-                    let dx1 = Int(ctrlOut.x) - currentX
-                    let dy1 = Int(ctrlOut.y) - currentY
-                    let dx2 = Int(ctrlIn.x) - Int(ctrlOut.x)
-                    let dy2 = Int(ctrlIn.y) - Int(ctrlOut.y)
-                    let dx3 = Int(curr.position.x) - Int(ctrlIn.x)
-                    let dy3 = Int(curr.position.y) - Int(ctrlIn.y)
+                    let dx1 = Int(ctrlOut.x.rounded()) - currentX
+                    let dy1 = Int(ctrlOut.y.rounded()) - currentY
+                    let dx2 = Int(ctrlIn.x.rounded()) - Int(ctrlOut.x.rounded())
+                    let dy2 = Int(ctrlIn.y.rounded()) - Int(ctrlOut.y.rounded())
+                    let dx3 = Int(curr.position.x.rounded()) - Int(ctrlIn.x.rounded())
+                    let dy3 = Int(curr.position.y.rounded()) - Int(ctrlIn.y.rounded())
 
                     try encodeCharStringNumber(&cs, value: dx1)
                     try encodeCharStringNumber(&cs, value: dy1)
@@ -429,8 +426,8 @@ struct CFFBuilder {
                     try encodeCharStringNumber(&cs, value: dx3)
                     try encodeCharStringNumber(&cs, value: dy3)
                     cs.append(8)  // rrcurveto
-                    currentX = Int(curr.position.x)
-                    currentY = Int(curr.position.y)
+                    currentX = Int(curr.position.x.rounded())
+                    currentY = Int(curr.position.y.rounded())
                 } else if prev.controlOut != nil || curr.controlIn != nil {
                     // Quadratic bezier (one control point) — convert to cubic losslessly.
                     // For a quadratic with control point P, start S, end E:
@@ -447,12 +444,12 @@ struct CFFBuilder {
                     let cp2x = endX + 2.0 / 3.0 * (quadCtrl.x - endX)
                     let cp2y = endY + 2.0 / 3.0 * (quadCtrl.y - endY)
 
-                    let dx1 = Int(cp1x) - currentX
-                    let dy1 = Int(cp1y) - currentY
-                    let dx2 = Int(cp2x) - Int(cp1x)
-                    let dy2 = Int(cp2y) - Int(cp1y)
-                    let dx3 = Int(endX) - Int(cp2x)
-                    let dy3 = Int(endY) - Int(cp2y)
+                    let dx1 = Int(cp1x.rounded()) - currentX
+                    let dy1 = Int(cp1y.rounded()) - currentY
+                    let dx2 = Int(cp2x.rounded()) - Int(cp1x.rounded())
+                    let dy2 = Int(cp2y.rounded()) - Int(cp1y.rounded())
+                    let dx3 = Int(endX.rounded()) - Int(cp2x.rounded())
+                    let dy3 = Int(endY.rounded()) - Int(cp2y.rounded())
 
                     try encodeCharStringNumber(&cs, value: dx1)
                     try encodeCharStringNumber(&cs, value: dy1)
@@ -461,17 +458,17 @@ struct CFFBuilder {
                     try encodeCharStringNumber(&cs, value: dx3)
                     try encodeCharStringNumber(&cs, value: dy3)
                     cs.append(8)  // rrcurveto
-                    currentX = Int(endX)
-                    currentY = Int(endY)
+                    currentX = Int(endX.rounded())
+                    currentY = Int(endY.rounded())
                 } else {
                     // Line — relative to current point
-                    let dx = Int(curr.position.x) - currentX
-                    let dy = Int(curr.position.y) - currentY
+                    let dx = Int(curr.position.x.rounded()) - currentX
+                    let dy = Int(curr.position.y.rounded()) - currentY
                     try encodeCharStringNumber(&cs, value: dx)
                     try encodeCharStringNumber(&cs, value: dy)
                     cs.append(5)  // rlineto
-                    currentX = Int(curr.position.x)
-                    currentY = Int(curr.position.y)
+                    currentX = Int(curr.position.x.rounded())
+                    currentY = Int(curr.position.y.rounded())
                 }
             }
 
@@ -482,8 +479,8 @@ struct CFFBuilder {
                 let lastPoint = points[points.count - 1]
                 let firstPoint = points[0]
 
-                let firstX = Int(firstPoint.position.x)
-                let firstY = Int(firstPoint.position.y)
+                let firstX = Int(firstPoint.position.x.rounded())
+                let firstY = Int(firstPoint.position.y.rounded())
 
                 // Only emit closing segment if current point isn't already at the first point
                 if currentX != firstX || currentY != firstY
@@ -491,12 +488,12 @@ struct CFFBuilder {
 
                     if let ctrlOut = lastPoint.controlOut, let ctrlIn = firstPoint.controlIn {
                         // Closing segment is a cubic bezier curve
-                        let dx1 = Int(ctrlOut.x) - currentX
-                        let dy1 = Int(ctrlOut.y) - currentY
-                        let dx2 = Int(ctrlIn.x) - Int(ctrlOut.x)
-                        let dy2 = Int(ctrlIn.y) - Int(ctrlOut.y)
-                        let dx3 = firstX - Int(ctrlIn.x)
-                        let dy3 = firstY - Int(ctrlIn.y)
+                        let dx1 = Int(ctrlOut.x.rounded()) - currentX
+                        let dy1 = Int(ctrlOut.y.rounded()) - currentY
+                        let dx2 = Int(ctrlIn.x.rounded()) - Int(ctrlOut.x.rounded())
+                        let dy2 = Int(ctrlIn.y.rounded()) - Int(ctrlOut.y.rounded())
+                        let dx3 = firstX - Int(ctrlIn.x.rounded())
+                        let dy3 = firstY - Int(ctrlIn.y.rounded())
 
                         try encodeCharStringNumber(&cs, value: dx1)
                         try encodeCharStringNumber(&cs, value: dy1)
@@ -521,12 +518,12 @@ struct CFFBuilder {
                         let cp2x = endX + 2.0 / 3.0 * (quadCtrl.x - endX)
                         let cp2y = endY + 2.0 / 3.0 * (quadCtrl.y - endY)
 
-                        let dx1 = Int(cp1x) - currentX
-                        let dy1 = Int(cp1y) - currentY
-                        let dx2 = Int(cp2x) - Int(cp1x)
-                        let dy2 = Int(cp2y) - Int(cp1y)
-                        let dx3 = firstX - Int(cp2x)
-                        let dy3 = firstY - Int(cp2y)
+                        let dx1 = Int(cp1x.rounded()) - currentX
+                        let dy1 = Int(cp1y.rounded()) - currentY
+                        let dx2 = Int(cp2x.rounded()) - Int(cp1x.rounded())
+                        let dy2 = Int(cp2y.rounded()) - Int(cp1y.rounded())
+                        let dx3 = firstX - Int(cp2x.rounded())
+                        let dy3 = firstY - Int(cp2y.rounded())
 
                         try encodeCharStringNumber(&cs, value: dx1)
                         try encodeCharStringNumber(&cs, value: dy1)

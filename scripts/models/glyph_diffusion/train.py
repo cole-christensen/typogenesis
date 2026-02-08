@@ -18,8 +18,6 @@ Usage:
 
 import argparse
 import logging
-import math
-import os
 import sys
 import time
 from contextlib import nullcontext
@@ -33,15 +31,15 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader
 
-from config import (
+from .config import (
     Config,
     ModelConfig,
     TrainingConfig,
     FlowMatchingConfig,
     DataConfig,
 )
-from model import GlyphDiffusionModel, create_model
-from noise_schedule import (
+from .model import GlyphDiffusionModel, create_model
+from .noise_schedule import (
     FlowMatchingSchedule,
     FlowMatchingLoss,
     prepare_training_batch,
@@ -990,7 +988,7 @@ def main() -> None:
         config = Config.default()
 
     # Override with command line arguments
-    from config import Resolution
+    from .config import Resolution
 
     if args.resolution == 128:
         config.model.resolution = Resolution.HIGH

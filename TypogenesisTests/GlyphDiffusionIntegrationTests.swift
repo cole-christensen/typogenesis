@@ -174,8 +174,8 @@ struct GlyphDiffusionIntegrationTests {
         let pointsDiffer = thinPoints != boldPoints
         let boundsDiffer = thinBounds.width != boldBounds.width || thinBounds.height != boldBounds.height
 
-        #expect(pointsDiffer || boundsDiffer,
-                "Different styles (thin vs bold) should produce different outlines")
+        #expect(boundsDiffer,
+                "Different styles (thin vs bold) should produce different bounding boxes")
     }
 
     // MARK: - Fallback Behavior Tests

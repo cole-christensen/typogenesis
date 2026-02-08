@@ -116,9 +116,7 @@ struct EmptyContentView: View {
 
 struct GlyphEditorContainer: View {
     @EnvironmentObject var appState: AppState
-    @State private var editorViewModel: GlyphEditorViewModel?
     @State private var showAddGlyphSheet = false
-    @State private var glyphSyncTask: Task<Void, Never>?
 
     var body: some View {
         if let project = appState.currentProject {
@@ -133,39 +131,9 @@ struct GlyphEditorContainer: View {
                 )
 
                 if let character = appState.selectedGlyph,
-                   let glyph = project.glyph(for: character),
-                   let vm = editorViewModel, vm.glyph.character == character {
-                    InteractiveGlyphCanvas(
-                        viewModel: vm,
-                        metrics: project.metrics
-                    )
-                    .onChange(of: appState.selectedGlyph) { _, newChar in
-                        if let char = newChar, let g = project.glyph(for: char) {
-                            let savedTool = editorViewModel?.currentTool ?? .select
-                            editorViewModel = GlyphEditorViewModel(glyph: g)
-                            editorViewModel?.currentTool = savedTool
-                        }
-                    }
-                    .onChange(of: editorViewModel?.glyph) { _, newGlyph in
-                        glyphSyncTask?.cancel()
-                        glyphSyncTask = Task { @MainActor in
-                            try? await Task.sleep(for: .milliseconds(100))
-                            guard !Task.isCancelled, let glyph = newGlyph else { return }
-                            appState.updateGlyph(glyph)
-                        }
-                    }
-                    .onAppear {
-                        if editorViewModel?.glyph.character != character {
-                            editorViewModel = GlyphEditorViewModel(glyph: glyph)
-                        }
-                    }
-                } else if let character = appState.selectedGlyph,
-                          let glyph = project.glyph(for: character) {
-                    // ViewModel not yet initialized for this glyph; show placeholder until onAppear fires
-                    GlyphEditorPlaceholder(onAddGlyph: { showAddGlyphSheet = true })
-                        .onAppear {
-                            editorViewModel = GlyphEditorViewModel(glyph: glyph)
-                        }
+                   let glyph = project.glyph(for: character) {
+                    GlyphEditorSubview(glyph: glyph, metrics: project.metrics)
+                        .id(character)
                 } else {
                     GlyphEditorPlaceholder(onAddGlyph: { showAddGlyphSheet = true })
                 }
@@ -176,6 +144,29 @@ struct GlyphEditorContainer: View {
                     appState.selectedGlyph = character
                 }
             }
+        }
+    }
+}
+
+/// Subview that owns its own GlyphEditorViewModel via @StateObject.
+/// Using .id(character) on the parent forces recreation when the glyph changes.
+struct GlyphEditorSubview: View {
+    @EnvironmentObject var appState: AppState
+    @StateObject private var viewModel: GlyphEditorViewModel
+    let metrics: FontMetrics
+
+    init(glyph: Glyph, metrics: FontMetrics) {
+        _viewModel = StateObject(wrappedValue: GlyphEditorViewModel(glyph: glyph))
+        self.metrics = metrics
+    }
+
+    var body: some View {
+        InteractiveGlyphCanvas(
+            viewModel: viewModel,
+            metrics: metrics
+        )
+        .onChange(of: viewModel.glyph) { _, newGlyph in
+            appState.updateGlyph(newGlyph)
         }
     }
 }

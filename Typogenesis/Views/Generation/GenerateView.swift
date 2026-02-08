@@ -2,7 +2,7 @@ import SwiftUI
 
 struct GenerateView: View {
     @EnvironmentObject var appState: AppState
-    @StateObject private var modelManager = ModelManager.shared
+    @ObservedObject private var modelManager = ModelManager.shared
     @State private var selectedMode: GenerationMode = .completeFont
     @State private var selectedCharacterSet: CharacterSetOption = .basicLatin
     @State private var stylePrompt: String = ""

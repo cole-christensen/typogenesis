@@ -8,8 +8,8 @@ struct KerningPredictorTests {
 
     // MARK: - Helper Functions
 
-    /// Creates a test project with glyphs for testing kerning
-    private func createTestProject(withCharacters chars: [Character]) -> FontProject {
+    /// Creates a test project with identical rectangular glyphs for testing kerning
+    private func createTestProjectWithIdenticalGlyphs(characters chars: [Character]) -> FontProject {
         var project = FontProject(name: "Test Font", family: "Test", style: "Regular")
 
         for char in chars {
@@ -237,7 +237,7 @@ struct KerningPredictorTests {
     @Test("Predict pair returns 0 for missing glyph")
     func testPredictPairWithMissingGlyph() async throws {
         let predictor = KerningPredictor()
-        let project = createTestProject(withCharacters: ["A"])
+        let project = createTestProjectWithIdenticalGlyphs(characters: ["A"])
 
         // "V" doesn't exist in project
         let kerning = try await predictor.predictPair(
@@ -283,7 +283,7 @@ struct KerningPredictorTests {
     @Test("Include punctuation setting works")
     func testIncludePunctuationSetting() async throws {
         let predictor = KerningPredictor()
-        let project = createTestProject(withCharacters: ["A", "V", ".", ",", "!"])
+        let project = createTestProjectWithIdenticalGlyphs(characters: ["A", "V", ".", ",", "!"])
 
         // With punctuation
         let withPunctSettings = KerningPredictor.PredictionSettings(
@@ -311,7 +311,7 @@ struct KerningPredictorTests {
     @Test("Include numbers setting works")
     func testIncludeNumbersSetting() async throws {
         let predictor = KerningPredictor()
-        let project = createTestProject(withCharacters: ["A", "1", "2", "3"])
+        let project = createTestProjectWithIdenticalGlyphs(characters: ["A", "1", "2", "3"])
 
         // With numbers
         let withNumbersSettings = KerningPredictor.PredictionSettings(

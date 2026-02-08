@@ -25,8 +25,6 @@ Usage:
 
 import argparse
 import logging
-import os
-import sys
 from pathlib import Path
 from typing import Optional, Union
 
@@ -34,7 +32,7 @@ import numpy as np
 import torch
 from PIL import Image
 
-from config import (
+from .config import (
     Config,
     ModelConfig,
     SamplingConfig,
@@ -44,8 +42,8 @@ from config import (
     get_character_set,
     char_to_index,
 )
-from model import GlyphDiffusionModel, create_model
-from noise_schedule import FlowMatchingScheduler, sample_euler
+from .model import GlyphDiffusionModel, create_model
+from .noise_schedule import FlowMatchingScheduler, sample_euler
 
 # Configure logging
 logging.basicConfig(

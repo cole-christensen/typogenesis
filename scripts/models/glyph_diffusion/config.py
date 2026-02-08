@@ -34,6 +34,8 @@ class ModelConfig:
         dropout: Dropout rate in residual blocks.
         num_heads: Number of attention heads.
         num_characters: Number of distinct characters (a-z, A-Z, 0-9).
+            The embedding table is sized num_characters + 1 to accommodate
+            a null class for classifier-free guidance.
         char_embed_dim: Dimension of character embeddings.
         style_embed_dim: Dimension of style embeddings from StyleEncoder.
         time_embed_dim: Dimension of time embeddings.

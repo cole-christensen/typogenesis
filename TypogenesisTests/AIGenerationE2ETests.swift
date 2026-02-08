@@ -25,7 +25,7 @@ struct AIGenerationE2ETests {
         // Add representative glyphs for style analysis
         let representativeChars: [Character] = ["n", "o", "H", "O", "a", "e"]
         for char in representativeChars {
-            let outline = createSampleGlyphOutline(for: char)
+            let outline = createSampleGlyphOutline()
             sourceProject.glyphs[char] = Glyph(
                 character: char,
                 outline: outline,
@@ -48,6 +48,13 @@ struct AIGenerationE2ETests {
         #expect(extractedStyle.xHeightRatio > 0)
         #expect(extractedStyle.roundness >= 0 && extractedStyle.roundness <= 1)
         #expect(extractedStyle.regularity >= 0 && extractedStyle.regularity <= 1)
+
+        // Tighter assertions based on geometric fallback with identical rectangular glyphs:
+        // All corner points -> roundness = 0; identical shapes -> contrast = 0, regularity > 0.95
+        #expect(extractedStyle.roundness == 0, "All-corner rectangular glyphs should have roundness 0, got \(extractedStyle.roundness)")
+        #expect(extractedStyle.strokeContrast == 0, "Identical glyphs should have 0 stroke contrast, got \(extractedStyle.strokeContrast)")
+        #expect(extractedStyle.regularity > 0.95, "Identical rectangular glyphs should have high regularity, got \(extractedStyle.regularity)")
+        #expect(extractedStyle.xHeightRatio > 0.7 && extractedStyle.xHeightRatio < 0.72, "xHeightRatio should be ~0.714 (500/700), got \(extractedStyle.xHeightRatio)")
 
         // =====================================================
         // PHASE 3: Generate new glyphs from scratch with style
@@ -199,7 +206,7 @@ struct AIGenerationE2ETests {
 
         // Add glyphs with bold-like characteristics (thicker strokes)
         for char in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz" {
-            let outline = createBoldGlyphOutline(for: char)
+            let outline = createBoldGlyphOutline()
             sourceFont.glyphs[char] = Glyph(
                 character: char,
                 outline: outline,
@@ -227,7 +234,7 @@ struct AIGenerationE2ETests {
         lightFont.metrics = sourceFont.metrics
 
         for char in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz" {
-            let outline = createLightGlyphOutline(for: char)
+            let outline = createLightGlyphOutline()
             lightFont.glyphs[char] = Glyph(
                 character: char,
                 outline: outline,
@@ -307,7 +314,7 @@ struct AIGenerationE2ETests {
         for char in "noHOae" {
             sansSerifFont.glyphs[char] = Glyph(
                 character: char,
-                outline: createSansSerifOutline(for: char),
+                outline: createSansSerifOutline(),
                 advanceWidth: 500,
                 leftSideBearing: 50
             )
@@ -383,7 +390,7 @@ struct AIGenerationE2ETests {
 
     // MARK: - Helper Methods
 
-    private func createSampleGlyphOutline(for char: Character) -> GlyphOutline {
+    private func createSampleGlyphOutline() -> GlyphOutline {
         // Create simple rectangular outline
         GlyphOutline(contours: [
             Contour(points: [
@@ -395,7 +402,7 @@ struct AIGenerationE2ETests {
         ])
     }
 
-    private func createBoldGlyphOutline(for char: Character) -> GlyphOutline {
+    private func createBoldGlyphOutline() -> GlyphOutline {
         // Create thicker rectangular outline (bold-like)
         GlyphOutline(contours: [
             Contour(points: [
@@ -407,7 +414,7 @@ struct AIGenerationE2ETests {
         ])
     }
 
-    private func createLightGlyphOutline(for char: Character) -> GlyphOutline {
+    private func createLightGlyphOutline() -> GlyphOutline {
         // Create thinner rectangular outline (light-like)
         GlyphOutline(contours: [
             Contour(points: [
@@ -419,7 +426,7 @@ struct AIGenerationE2ETests {
         ])
     }
 
-    private func createSansSerifOutline(for char: Character) -> GlyphOutline {
+    private func createSansSerifOutline() -> GlyphOutline {
         // Create outline with smooth curves (sans-serif like)
         GlyphOutline(contours: [
             Contour(points: [
@@ -434,21 +441,8 @@ struct AIGenerationE2ETests {
 
 // MARK: - Thread-safe Progress Counter
 
-/// Actor for safely recording progress updates from @Sendable callbacks
-private actor ProgressCounter {
-    private var updates: [(current: Int, total: Int)] = []
-
-    func record(current: Int, total: Int) {
-        updates.append((current, total))
-    }
-
-    func getUpdates() -> [(current: Int, total: Int)] {
-        updates
-    }
-}
-
 /// Synchronous thread-safe counter for @Sendable progress callbacks.
-/// Uses os_unfair_lock for lock-free synchronous access (no await needed).
+/// Uses NSLock for synchronous access (no await needed).
 private final class AtomicProgressCount: @unchecked Sendable {
     private var _value: Int = 0
     private let lock = NSLock()

@@ -14,12 +14,12 @@ Key advantages over DDPM:
 - Better sample quality with fewer NFE (number of function evaluations)
 """
 
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 import torch.nn as nn
 
-from config import FlowMatchingConfig
+from .config import FlowMatchingConfig
 
 
 class FlowMatchingSchedule:
@@ -48,7 +48,6 @@ class FlowMatchingSchedule:
         self.config = config or FlowMatchingConfig()
         self.sigma_min = self.config.sigma_min
         self.sigma_max = self.config.sigma_max
-        self.num_train_steps = self.config.num_train_steps
         self.num_inference_steps = self.config.num_inference_steps
 
     def get_sigmas(self, num_steps: Optional[int] = None) -> torch.Tensor:
@@ -93,10 +92,10 @@ class FlowMatchingSchedule:
         # Linear interpolation
         x_t = (1 - t) * x_0 + t * noise
 
-        # Add small amount of noise to avoid singular points, but only when t > 0
-        # At t=0, x_t should be exactly x_0 (clean data)
-        noise_mask = (t > 0).float()
-        x_t = x_t + noise_mask * self.sigma_min * torch.randn_like(x_t)
+        # Note: Extra stability noise (sigma_min * randn) was removed because
+        # with sigma_min=1e-4 the added noise is negligible and the
+        # sample_timesteps method already avoids the exact t=0 and t=1
+        # boundaries, making the extra noise unnecessary.
 
         return x_t
 
@@ -213,7 +212,7 @@ class FlowMatchingScheduler(nn.Module):
         model_output: torch.Tensor,
         step_index: int,
         sample: torch.Tensor,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         """Perform one denoising step.
 
         Args:
@@ -295,7 +294,7 @@ def prepare_training_batch(
     x_0: torch.Tensor,
     schedule: FlowMatchingSchedule,
     device: torch.device,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Prepare a batch for training.
 
     This helper function handles:
@@ -340,7 +339,8 @@ def sample_euler(
     num_steps: Optional[int] = None,
     guidance_scale: float = 1.0,
     save_intermediates: bool = False,
-) -> Tuple[torch.Tensor, Optional[list[torch.Tensor]]]:
+    null_class_index: Optional[int] = None,
+) -> tuple[torch.Tensor, Optional[list[torch.Tensor]]]:
     """Generate samples using Euler method.
 
     This is the main sampling function for inference.
@@ -355,6 +355,9 @@ def sample_euler(
         num_steps: Number of inference steps.
         guidance_scale: Scale for classifier-free guidance (1.0 = no guidance).
         save_intermediates: Whether to save intermediate steps.
+        null_class_index: Index for the null/unconditional class used in
+            classifier-free guidance. Should be num_classes (one past the
+            last valid class). If None, defaults to max(char_indices) + 1.
 
     Returns:
         Tuple of (final samples, list of intermediates if saved).
@@ -367,6 +370,11 @@ def sample_euler(
     # Start with pure noise
     sample = noise
     intermediates = [] if save_intermediates else None
+
+    # Determine null class index for classifier-free guidance
+    if null_class_index is None:
+        # Default: one past the last valid character class (num_characters)
+        null_class_index = int(char_indices.max().item()) + 1
 
     # Iterate through timesteps
     for i, t in enumerate(scheduler.timesteps[:-1]):  # Skip last (t=0)
@@ -384,15 +392,19 @@ def sample_euler(
 
         # Classifier-free guidance (if scale > 1)
         if guidance_scale > 1.0:
-            # Get unconditional prediction (zero char embedding)
+            # Get unconditional prediction using null class index
+            # (one past valid classes, mapped to the null embedding)
+            uncond_char = torch.full_like(char_indices, null_class_index)
             uncond_velocity = model(
                 sample,
                 timestep,
-                torch.zeros_like(char_indices),
+                uncond_char,
                 style_embed,
                 mask,
             )
-            velocity = uncond_velocity + guidance_scale * (velocity - uncond_velocity)
+            velocity = uncond_velocity + guidance_scale * (
+                velocity - uncond_velocity
+            )
 
         # Take Euler step
         sample, pred_x0 = scheduler.step(velocity, i, sample)
@@ -409,7 +421,6 @@ if __name__ == "__main__":
     schedule = FlowMatchingSchedule(config)
 
     print("Testing FlowMatchingSchedule:")
-    print(f"  Num train steps: {schedule.num_train_steps}")
     print(f"  Num inference steps: {schedule.num_inference_steps}")
 
     # Test add_noise

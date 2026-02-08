@@ -110,7 +110,7 @@ struct HandwritingScannerE2ETests {
         #expect(project.glyphs.count == 1)
 
         // =====================================================
-        // PHASE 7: Add more glyphs (simulating batch processing)
+        // PHASE 7: Add placeholder glyphs to test the export pipeline with multiple characters
         // =====================================================
 
         // In real usage, these would come from scanned sample sheets

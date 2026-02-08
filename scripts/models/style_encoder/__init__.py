@@ -20,7 +20,7 @@ Usage:
 
 from .config import StyleEncoderConfig, TrainingConfig, default_config
 from .model import StyleEncoder, create_style_encoder
-from .losses import NTXentLoss, TripletLoss, InfoNCELoss
+from .losses import NTXentLoss, TripletLoss, InfoNCELoss, SupConLoss
 from .embed import StyleEmbedder
 
 __all__ = [
@@ -32,6 +32,7 @@ __all__ = [
     "NTXentLoss",
     "TripletLoss",
     "InfoNCELoss",
+    "SupConLoss",
     "StyleEmbedder",
 ]
 

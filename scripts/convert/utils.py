@@ -368,33 +368,18 @@ def convert_onnx_to_coreml(
         }
         compute_unit = compute_map.get(compute_units, ct.ComputeUnit.ALL)
 
-        # Convert ONNX to CoreML
-        mlmodel = ct.convert(
-            str(onnx_path),
-            minimum_deployment_target=target,
-            compute_units=compute_unit,
-            convert_to="mlprogram",  # Use ML Program format for better optimization
-        )
+        # Convert ONNX to CoreML, with optional float16 precision
+        convert_kwargs = {
+            "minimum_deployment_target": target,
+            "compute_units": compute_unit,
+            "convert_to": "mlprogram",  # Use ML Program format for better optimization
+        }
 
-        # Convert to float16 if requested (for smaller model size)
         if convert_to_float16:
-            logger.info("  Converting to float16 precision...")
-            try:
-                # Use the modern coremltools >= 7.0 API
-                op_config = ct.optimize.coreml.OpLinearQuantizerConfig(
-                    mode="linear_symmetric", dtype="float16"
-                )
-                config = ct.optimize.coreml.OptimizationConfig(
-                    global_config=op_config
-                )
-                mlmodel = ct.optimize.coreml.linear_quantize_weights(
-                    mlmodel, config=config
-                )
-            except AttributeError:
-                logger.warning(
-                    "  ct.optimize.coreml.linear_quantize_weights not available. "
-                    "Skipping float16 quantization. Update coremltools >= 7.0."
-                )
+            logger.info("  Converting with float16 precision...")
+            convert_kwargs["compute_precision"] = ct.precision.FLOAT16
+
+        mlmodel = ct.convert(str(onnx_path), **convert_kwargs)
 
         # Set metadata
         mlmodel.author = author or "Typogenesis"

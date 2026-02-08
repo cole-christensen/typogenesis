@@ -12,7 +12,6 @@ struct InteractiveGlyphCanvas: View {
     @State private var showControlPoints = true
     @State private var currentDragHit: GlyphEditorViewModel.HitTestResult?
     @State private var lastDragPosition: CGPoint?
-    @State private var canvasSize: CGSize = .zero
 
     private let gridColor = Color.gray.opacity(0.2)
     private let pointColor = Color.blue
@@ -45,12 +44,6 @@ struct InteractiveGlyphCanvas: View {
                 }
                 .gesture(editingGesture(in: geometry.size))
                 .simultaneousGesture(magnificationGesture)
-            }
-            .onAppear {
-                canvasSize = geometry.size
-            }
-            .onChange(of: geometry.size) { _, newSize in
-                canvasSize = newSize
             }
             .overlay(alignment: .topTrailing) {
                 canvasControls

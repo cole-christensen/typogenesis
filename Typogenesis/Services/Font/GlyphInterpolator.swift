@@ -721,7 +721,7 @@ actor GlyphInterpolator {
             outline: interpolatedOutline,
             advanceWidth: Int(interpolatedAdvanceWidth.rounded()),
             leftSideBearing: Int(interpolatedLSB.rounded()),
-            generatedBy: .placeholder,
+            generatedBy: .interpolated,
             styleConfidence: nil
         )
     }

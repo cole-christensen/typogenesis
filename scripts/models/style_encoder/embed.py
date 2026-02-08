@@ -240,38 +240,43 @@ class StyleEmbedder:
             >>> images = list(Path("font/").glob("*.png"))
             >>> embeddings, names = embedder.embed_batch(images)
         """
-        # Convert to paths
+        import tempfile
+
+        # Convert to paths, using a temporary directory for PIL Images
         paths = []
-        for img in images:
-            if isinstance(img, (str, Path)):
-                paths.append(Path(img))
-            elif isinstance(img, Image.Image):
-                # Save temporarily (not ideal, but ensures consistent handling)
-                import tempfile
-                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-                    img.save(f.name)
-                    paths.append(Path(f.name))
+        temp_dir = tempfile.TemporaryDirectory()
+        try:
+            for i, img in enumerate(images):
+                if isinstance(img, (str, Path)):
+                    paths.append(Path(img))
+                elif isinstance(img, Image.Image):
+                    # Save to temp directory (cleaned up automatically)
+                    temp_path = Path(temp_dir.name) / f"temp_{i}.png"
+                    img.save(temp_path)
+                    paths.append(temp_path)
 
-        # Create dataset and loader
-        dataset = GlyphImageDataset(paths, transform=self.transform)
-        loader = DataLoader(
-            dataset,
-            batch_size=batch_size,
-            shuffle=False,
-            num_workers=num_workers,
-            pin_memory=True,
-        )
+            # Create dataset and loader
+            dataset = GlyphImageDataset(paths, transform=self.transform)
+            loader = DataLoader(
+                dataset,
+                batch_size=batch_size,
+                shuffle=False,
+                num_workers=num_workers,
+                pin_memory=True,
+            )
 
-        all_embeddings = []
-        all_names = []
+            all_embeddings = []
+            all_names = []
 
-        for batch_images, names in loader:
-            batch_images = batch_images.to(self.device)
-            embeddings = self.model.encode(batch_images)
-            all_embeddings.append(embeddings.cpu().numpy())
-            all_names.extend(names)
+            for batch_images, names in loader:
+                batch_images = batch_images.to(self.device)
+                embeddings = self.model.encode(batch_images)
+                all_embeddings.append(embeddings.cpu().numpy())
+                all_names.extend(names)
 
-        return np.concatenate(all_embeddings, axis=0), all_names
+            return np.concatenate(all_embeddings, axis=0), all_names
+        finally:
+            temp_dir.cleanup()
 
     @torch.no_grad()
     def embed_font(

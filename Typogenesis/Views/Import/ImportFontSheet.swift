@@ -275,8 +275,8 @@ struct ImportFontSheet: View {
     private func selectFile() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [
-            UTType(filenameExtension: "ttf")!,
-            UTType(filenameExtension: "otf")!
+            UTType(filenameExtension: "ttf") ?? .data,
+            UTType(filenameExtension: "otf") ?? .data
         ]
         panel.allowsMultipleSelection = false
         panel.message = "Select a font file to import"

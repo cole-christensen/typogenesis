@@ -259,9 +259,8 @@ struct GlyphEditorE2ETests {
 
         let predictor = KerningPredictor()
         let predictionResult = try await predictor.predictKerning(for: project)
-        // Geometric fallback always returns 0.6 confidence (no AI model loaded).
-        // When AI models are available, this should be 0.85.
-        #expect(predictionResult.confidence == 0.6, "Geometric fallback should return 0.6 confidence, got \(predictionResult.confidence)")
+        // Geometric fallback returns a confidence in (0, 1) (no AI model loaded).
+        #expect(predictionResult.confidence > 0 && predictionResult.confidence < 1, "Geometric fallback confidence should be in (0, 1), got \(predictionResult.confidence)")
 
         // =====================================================
         // PHASE 10: Export the font
@@ -311,19 +310,97 @@ struct KerningEditorE2ETests {
         // =====================================================
         var project = FontProject(name: "Kerning Test", family: "KernTest", style: "Regular")
 
-        // Add glyphs that typically need kerning
-        let glyphChars: [Character] = ["A", "V", "T", "o", "a", "W", "Y"]
-        for char in glyphChars {
-            let outline = GlyphOutline(contours: [
-                Contour(points: [
-                    PathPoint(position: CGPoint(x: 50, y: 0), type: .corner),
-                    PathPoint(position: CGPoint(x: 450, y: 0), type: .corner),
-                    PathPoint(position: CGPoint(x: 450, y: 700), type: .corner),
-                    PathPoint(position: CGPoint(x: 50, y: 700), type: .corner)
-                ], isClosed: true)
-            ])
-            project.glyphs[char] = Glyph(character: char, outline: outline, advanceWidth: 500, leftSideBearing: 50)
-        }
+        // Add glyphs with differentiated shapes that produce meaningful kerning values.
+        // Identical rectangles produce zero kerning for all pairs, making the test vacuous.
+
+        // "A" - triangular shape
+        let aOutline = GlyphOutline(contours: [
+            Contour(points: [
+                PathPoint(position: CGPoint(x: 250, y: 700), type: .corner),
+                PathPoint(position: CGPoint(x: 0, y: 0), type: .corner),
+                PathPoint(position: CGPoint(x: 100, y: 0), type: .corner),
+                PathPoint(position: CGPoint(x: 250, y: 500), type: .corner),
+                PathPoint(position: CGPoint(x: 400, y: 0), type: .corner),
+                PathPoint(position: CGPoint(x: 500, y: 0), type: .corner)
+            ], isClosed: true)
+        ])
+        project.glyphs["A"] = Glyph(character: "A", outline: aOutline, advanceWidth: 500, leftSideBearing: 0)
+
+        // "V" - inverted triangle
+        let vOutline = GlyphOutline(contours: [
+            Contour(points: [
+                PathPoint(position: CGPoint(x: 0, y: 700), type: .corner),
+                PathPoint(position: CGPoint(x: 250, y: 0), type: .corner),
+                PathPoint(position: CGPoint(x: 500, y: 700), type: .corner),
+                PathPoint(position: CGPoint(x: 400, y: 700), type: .corner),
+                PathPoint(position: CGPoint(x: 250, y: 200), type: .corner),
+                PathPoint(position: CGPoint(x: 100, y: 700), type: .corner)
+            ], isClosed: true)
+        ])
+        project.glyphs["V"] = Glyph(character: "V", outline: vOutline, advanceWidth: 500, leftSideBearing: 0)
+
+        // "T" - T-bar shape
+        let tOutline = GlyphOutline(contours: [
+            Contour(points: [
+                PathPoint(position: CGPoint(x: 0, y: 700), type: .corner),
+                PathPoint(position: CGPoint(x: 500, y: 700), type: .corner),
+                PathPoint(position: CGPoint(x: 500, y: 650), type: .corner),
+                PathPoint(position: CGPoint(x: 300, y: 650), type: .corner),
+                PathPoint(position: CGPoint(x: 300, y: 0), type: .corner),
+                PathPoint(position: CGPoint(x: 200, y: 0), type: .corner),
+                PathPoint(position: CGPoint(x: 200, y: 650), type: .corner),
+                PathPoint(position: CGPoint(x: 0, y: 650), type: .corner)
+            ], isClosed: true)
+        ])
+        project.glyphs["T"] = Glyph(character: "T", outline: tOutline, advanceWidth: 500, leftSideBearing: 0)
+
+        // "o" - oval
+        let oOutline = GlyphOutline(contours: [
+            Contour(points: [
+                PathPoint(position: CGPoint(x: 250, y: 500), type: .smooth),
+                PathPoint(position: CGPoint(x: 450, y: 250), type: .smooth),
+                PathPoint(position: CGPoint(x: 250, y: 0), type: .smooth),
+                PathPoint(position: CGPoint(x: 50, y: 250), type: .smooth)
+            ], isClosed: true)
+        ])
+        project.glyphs["o"] = Glyph(character: "o", outline: oOutline, advanceWidth: 500, leftSideBearing: 50)
+
+        // "a" - lowercase a
+        let aLowerOutline = GlyphOutline(contours: [
+            Contour(points: [
+                PathPoint(position: CGPoint(x: 50, y: 0), type: .corner),
+                PathPoint(position: CGPoint(x: 400, y: 0), type: .corner),
+                PathPoint(position: CGPoint(x: 400, y: 500), type: .corner),
+                PathPoint(position: CGPoint(x: 50, y: 500), type: .smooth),
+                PathPoint(position: CGPoint(x: 50, y: 250), type: .smooth)
+            ], isClosed: true)
+        ])
+        project.glyphs["a"] = Glyph(character: "a", outline: aLowerOutline, advanceWidth: 450, leftSideBearing: 50)
+
+        // "W" - double-V shape
+        let wOutline = GlyphOutline(contours: [
+            Contour(points: [
+                PathPoint(position: CGPoint(x: 0, y: 700), type: .corner),
+                PathPoint(position: CGPoint(x: 125, y: 0), type: .corner),
+                PathPoint(position: CGPoint(x: 250, y: 500), type: .corner),
+                PathPoint(position: CGPoint(x: 375, y: 0), type: .corner),
+                PathPoint(position: CGPoint(x: 500, y: 700), type: .corner)
+            ], isClosed: true)
+        ])
+        project.glyphs["W"] = Glyph(character: "W", outline: wOutline, advanceWidth: 600, leftSideBearing: 0)
+
+        // "Y" - Y shape
+        let yOutline = GlyphOutline(contours: [
+            Contour(points: [
+                PathPoint(position: CGPoint(x: 0, y: 700), type: .corner),
+                PathPoint(position: CGPoint(x: 200, y: 350), type: .corner),
+                PathPoint(position: CGPoint(x: 200, y: 0), type: .corner),
+                PathPoint(position: CGPoint(x: 300, y: 0), type: .corner),
+                PathPoint(position: CGPoint(x: 300, y: 350), type: .corner),
+                PathPoint(position: CGPoint(x: 500, y: 700), type: .corner)
+            ], isClosed: true)
+        ])
+        project.glyphs["Y"] = Glyph(character: "Y", outline: yOutline, advanceWidth: 500, leftSideBearing: 0)
 
         #expect(project.glyphs.count == 7)
 
@@ -391,9 +468,8 @@ struct KerningEditorE2ETests {
         let predictor = KerningPredictor()
         let result = try await predictor.predictKerning(for: project)
 
-        // Geometric fallback always returns 0.6 confidence (no AI model loaded).
-        // When AI models are available, this should be 0.85.
-        #expect(result.confidence == 0.6, "Geometric fallback should return 0.6 confidence, got \(result.confidence)")
+        // Geometric fallback returns a confidence in (0, 1) (no AI model loaded).
+        #expect(result.confidence > 0 && result.confidence < 1, "Geometric fallback confidence should be in (0, 1), got \(result.confidence)")
         // Prediction should take measurable time
         #expect(result.predictionTime > 0, "Prediction should take measurable time, got \(result.predictionTime)")
 

@@ -661,7 +661,7 @@ struct HandwritingScanner: View {
             if let provider = providers.first {
                 _ = provider.loadDataRepresentation(for: .image) { data, error in
                     if let data = data, let image = NSImage(data: data) {
-                        DispatchQueue.main.async {
+                        Task { @MainActor in
                             uploadedImage = image
                             currentStep = .process
                         }
@@ -725,7 +725,7 @@ struct HandwritingScanner: View {
                     if item.title.contains("iPhone") || item.title.contains("iPad") ||
                        item.title.contains("Import from") || item.title.contains("Take Photo") ||
                        item.title.contains("Scan Documents") {
-                        let copiedItem = item.copy() as! NSMenuItem
+                        guard let copiedItem = item.copy() as? NSMenuItem else { continue }
                         menu.addItem(copiedItem)
                         foundContinuityItems = true
                     }
@@ -861,24 +861,27 @@ struct HandwritingScanner: View {
         // Update project with imported glyphs
         appState.currentProject = project
 
-        // Generate kerning if enabled
+        // Generate kerning if enabled, then reset scanner after completion
         if generateKerning {
             isGeneratingKerning = true
             Task {
                 await generateKerningPairs()
-                await MainActor.run {
-                    isGeneratingKerning = false
-                }
+                isGeneratingKerning = false
+                // Reset scanner after kerning generation completes
+                uploadedImage = nil
+                detectedCharacters = []
+                currentStep = .upload
             }
+        } else {
+            // Reset scanner immediately when no kerning generation needed
+            uploadedImage = nil
+            detectedCharacters = []
+            currentStep = .upload
         }
-
-        // Reset scanner
-        uploadedImage = nil
-        detectedCharacters = []
-        currentStep = .upload
     }
 
     /// Generates kerning pairs for the imported glyphs using KerningPredictor
+    @MainActor
     private func generateKerningPairs() async {
         guard var project = appState.currentProject else { return }
 
@@ -913,16 +916,12 @@ struct HandwritingScanner: View {
                 return lhs.left < rhs.left
             }
 
-            await MainActor.run {
-                if var currentProject = appState.currentProject {
-                    currentProject.kerning = project.kerning
-                    appState.currentProject = currentProject
-                }
+            if var currentProject = appState.currentProject {
+                currentProject.kerning = project.kerning
+                appState.currentProject = currentProject
             }
         } catch {
-            await MainActor.run {
-                processingError = "Kerning generation failed: \(error.localizedDescription). Glyphs were imported successfully but without kerning data."
-            }
+            processingError = "Kerning generation failed: \(error.localizedDescription). Glyphs were imported successfully but without kerning data."
         }
     }
 
@@ -966,7 +965,7 @@ struct HandwritingScanner: View {
             return
         }
 
-        let printInfo = NSPrintInfo.shared.copy() as! NSPrintInfo
+        guard let printInfo = NSPrintInfo.shared.copy() as? NSPrintInfo else { return }
         printInfo.horizontalPagination = .fit
         printInfo.verticalPagination = .fit
         printInfo.isHorizontallyCentered = true

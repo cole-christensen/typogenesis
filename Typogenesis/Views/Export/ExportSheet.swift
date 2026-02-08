@@ -19,18 +19,6 @@ struct ExportSheet: View {
         case ufo = "Unified Font Object (.ufo)"
         case designspace = "DesignSpace (.designspace)"
 
-        var isSupported: Bool {
-            switch self {
-            case .ttf, .otf, .woff, .woff2, .ufo, .designspace: return true
-            }
-        }
-
-        var statusText: String? {
-            switch self {
-            case .ttf, .otf, .woff, .woff2, .ufo, .designspace: return nil
-            }
-        }
-
         var isDirectory: Bool {
             self == .ufo || self == .designspace
         }
@@ -78,29 +66,19 @@ struct ExportSheet: View {
                 ForEach(availableFormats, id: \.self) { format in
                     HStack {
                         Button(action: {
-                            if format.isSupported && isFormatAvailable(format) {
+                            if isFormatAvailable(format) {
                                 selectedFormat = format
                             }
                         }) {
                             HStack {
                                 Image(systemName: selectedFormat == format ? "largecircle.fill.circle" : "circle")
-                                    .foregroundColor(format.isSupported && isFormatAvailable(format) ? .accentColor : .secondary)
+                                    .foregroundColor(isFormatAvailable(format) ? .accentColor : .secondary)
                                 Text(format.rawValue)
-                                    .foregroundColor(format.isSupported && isFormatAvailable(format) ? .primary : .secondary)
+                                    .foregroundColor(isFormatAvailable(format) ? .primary : .secondary)
                             }
                         }
                         .buttonStyle(.plain)
-                        .disabled(!format.isSupported || !isFormatAvailable(format))
-
-                        if let status = format.statusText {
-                            Text(status)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.secondary.opacity(0.2))
-                                .cornerRadius(4)
-                        }
+                        .disabled(!isFormatAvailable(format))
 
                         if format == .designspace && !isFormatAvailable(format) {
                             Text("Requires 2+ masters")

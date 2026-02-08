@@ -151,10 +151,9 @@ struct ModelManagerIntegrationTests {
         await manager.loadAllModels()
 
         // Without model files, loadAllModels should leave status at notDownloaded or error
-        let validPostLoad: [ModelManager.ModelStatus] = [.notDownloaded]
         for modelType in ModelManager.ModelType.allCases {
             let status = manager.status(for: modelType)
-            #expect(validPostLoad.contains(status) || status.displayText.contains("Error"),
+            #expect(status == .notDownloaded || status.displayText.contains("Error"),
                     "After loadAllModels without model files, status should be notDownloaded or error, got \(status) for \(modelType)")
         }
     }

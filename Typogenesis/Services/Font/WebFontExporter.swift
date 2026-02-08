@@ -434,12 +434,11 @@ actor WebFontExporter {
             )
         }
 
-        // Negative or zero return from compression_encode_buffer indicates a real failure
-        if compressedSize < 0 {
-            throw WebFontError.compressionFailed
-        }
-        if compressedSize == 0 {
-            throw WebFontError.compressionFailed
+        // Negative or zero return from compression_encode_buffer indicates compression
+        // could not produce output. WOFF allows storing tables uncompressed, so return
+        // the original data rather than failing the entire export.
+        if compressedSize <= 0 {
+            return data
         }
 
         // If compressed output is larger than or equal to the original, compression expanded

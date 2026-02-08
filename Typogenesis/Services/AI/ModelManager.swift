@@ -2,6 +2,7 @@ import Foundation
 @preconcurrency import CoreML
 import Combine
 import CryptoKit
+import os
 
 /// Manages AI model loading, caching, and lifecycle.
 ///
@@ -13,6 +14,8 @@ import CryptoKit
 @MainActor
 final class ModelManager: ObservableObject {
     static let shared = ModelManager()
+
+    private let logger = Logger(subsystem: "com.typogenesis", category: "ModelManager")
 
     // MARK: - Model Status
 
@@ -205,15 +208,21 @@ final class ModelManager: ObservableObject {
 
     private init() {
         // Set up models directory in Application Support
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        modelsDirectory = appSupport.appendingPathComponent("Typogenesis/Models", isDirectory: true)
+        let appSupportURL: URL
+        if let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            appSupportURL = appSupport
+        } else {
+            appSupportURL = FileManager.default.temporaryDirectory
+            print("[ModelManager] WARNING: Application Support directory unavailable, falling back to temp directory")
+        }
+        modelsDirectory = appSupportURL.appendingPathComponent("Typogenesis/Models", isDirectory: true)
 
         // Create directory if needed - handle errors explicitly
         do {
             try FileManager.default.createDirectory(at: modelsDirectory, withIntermediateDirectories: true)
         } catch {
             // Log error and store for later - don't silently swallow
-            print("[ModelManager] ERROR: Failed to create models directory at \(modelsDirectory.path): \(error.localizedDescription)")
+            logger.error("Failed to create models directory at \(self.modelsDirectory.path): \(error.localizedDescription)")
             initializationError = error
             // Set all statuses to error so UI can display the problem
             glyphDiffusionStatus = .error("Storage unavailable")
@@ -413,7 +422,7 @@ final class ModelManager: ObservableObject {
                     if isValid {
                         self.validationCache[modelType] = true
                         self.setStatus(.downloaded, for: modelType)
-                        print("[ModelManager] Model \(modelType.displayName) downloaded and validated successfully")
+                        self.logger.info("Model \(modelType.displayName) downloaded and validated successfully")
                     } else {
                         self.setStatus(.error("Model validation failed - file may be corrupted"), for: modelType)
                         // Delete the corrupted file
@@ -436,7 +445,7 @@ final class ModelManager: ObservableObject {
                             try await Task.sleep(nanoseconds: UInt64(attempt) * 1_000_000_000)
                         } catch {
                             // Sleep was interrupted (likely task cancellation) - propagate
-                            print("[ModelManager] Download retry sleep interrupted: \(error.localizedDescription)")
+                            self.logger.debug("Download retry sleep interrupted: \(error.localizedDescription)")
                             self.setStatus(.notDownloaded, for: modelType)
                             self.downloadTasks.removeValue(forKey: modelType)
                             self.isPerformingOperation = false
@@ -496,7 +505,7 @@ final class ModelManager: ObservableObject {
                 }
                 try FileManager.default.copyItem(at: modelURL, to: backupURL)
             } catch {
-                print("[ModelManager] WARNING: Could not backup model before update: \(error.localizedDescription)")
+                logger.error("Could not backup model before update: \(error.localizedDescription)")
             }
         }
 
@@ -524,12 +533,12 @@ final class ModelManager: ObservableObject {
 
     /// Check for model updates from remote server
     func checkForUpdates() async {
-        print("[ModelManager] Checking for model updates...")
+        logger.info("Checking for model updates...")
 
         // HONEST STATUS: No model server exists yet
         // When a server is available, this will fetch the manifest and compare versions
         guard let _ = modelServerBaseURL else {
-            print("[ModelManager] No model server configured - updates not available")
+            logger.info("No model server configured - updates not available")
             return
         }
 
@@ -546,7 +555,7 @@ final class ModelManager: ObservableObject {
     /// available. When a model hosting server is set up, this will perform
     /// real downloads.
     private func performDownload(_ modelType: ModelType, attempt: Int) async throws {
-        print("[ModelManager] Download attempt \(attempt) for \(modelType.displayName)")
+        logger.info("Download attempt \(attempt) for \(modelType.displayName)")
 
         // Check if model server is configured
         guard let baseURL = modelServerBaseURL else {
@@ -582,7 +591,7 @@ final class ModelManager: ObservableObject {
         let modelURL = modelsDirectory.appendingPathComponent(modelType.fileName)
 
         guard FileManager.default.fileExists(atPath: modelURL.path) else {
-            print("[ModelManager] Validation failed: model file does not exist at \(modelURL.path)")
+            logger.error("Validation failed: model file does not exist at \(modelURL.path)")
             return false
         }
 
@@ -592,19 +601,19 @@ final class ModelManager: ObservableObject {
             let fileSize = attributes[.size] as? Int64 ?? 0
 
             if fileSize == 0 {
-                print("[ModelManager] Validation failed: model file is empty")
+                logger.error("Validation failed: model file is empty")
                 return false
             }
 
             // If we have expected version info with size, verify it
             if let versionInfo = modelVersions[modelType], versionInfo.size > 0 {
                 if fileSize != versionInfo.size {
-                    print("[ModelManager] Validation failed: file size mismatch (expected \(versionInfo.size), got \(fileSize))")
+                    logger.error("Validation failed: file size mismatch (expected \(versionInfo.size), got \(fileSize))")
                     return false
                 }
             }
         } catch {
-            print("[ModelManager] Validation failed: could not read file attributes: \(error.localizedDescription)")
+            logger.error("Validation failed: could not read file attributes: \(error.localizedDescription)")
             return false
         }
 
@@ -612,7 +621,7 @@ final class ModelManager: ObservableObject {
         if let versionInfo = modelVersions[modelType], !versionInfo.checksum.isEmpty {
             let computedChecksum = await computeChecksum(for: modelURL)
             if computedChecksum != versionInfo.checksum {
-                print("[ModelManager] Validation failed: checksum mismatch")
+                logger.error("Validation failed: checksum mismatch")
                 return false
             }
         }
@@ -622,22 +631,32 @@ final class ModelManager: ObservableObject {
             let config = MLModelConfiguration()
             config.computeUnits = .cpuOnly  // Use CPU for validation to be faster
             _ = try await MLModel.load(contentsOf: modelURL, configuration: config)
-            print("[ModelManager] Validation passed: model \(modelType.displayName) is valid CoreML model")
+            logger.info("Validation passed: model \(modelType.displayName) is valid CoreML model")
             return true
         } catch {
-            print("[ModelManager] Validation failed: could not load model: \(error.localizedDescription)")
+            logger.error("Validation failed: could not load model: \(error.localizedDescription)")
             return false
         }
     }
 
-    /// Compute SHA256 checksum of a file.
+    /// Compute SHA256 checksum of a file using streaming reads.
     /// Uses a detached task to avoid blocking the MainActor with potentially large file reads.
+    /// Reads in 64KB chunks to avoid loading entire model files into memory.
     private func computeChecksum(for url: URL) async -> String {
         let capturedURL = url
         return await Task.detached {
             do {
-                let data = try Data(contentsOf: capturedURL)
-                let hash = SHA256.hash(data: data)
+                let bufferSize = 65_536  // 64KB chunks
+                let fileHandle = try FileHandle(forReadingFrom: capturedURL)
+                defer { fileHandle.closeFile() }
+
+                var hasher = SHA256()
+                while true {
+                    let chunk = fileHandle.readData(ofLength: bufferSize)
+                    if chunk.isEmpty { break }
+                    hasher.update(data: chunk)
+                }
+                let hash = hasher.finalize()
                 return hash.compactMap { String(format: "%02x", $0) }.joined()
             } catch {
                 print("[ModelManager] Could not compute checksum: \(error.localizedDescription)")
@@ -653,7 +672,7 @@ final class ModelManager: ObservableObject {
             let data = try JSONEncoder().encode(info)
             try data.write(to: versionURL)
         } catch {
-            print("[ModelManager] Could not save version info: \(error.localizedDescription)")
+            logger.error("Could not save version info: \(error.localizedDescription)")
         }
     }
 
@@ -746,7 +765,7 @@ final class ModelManager: ObservableObject {
                 setStatus(.notDownloaded, for: modelType)
             } else {
                 // Actual error - log it and set error status
-                print("[ModelManager] ERROR: Failed to delete model \(modelType.displayName): \(error.localizedDescription)")
+                logger.error("Failed to delete model \(modelType.displayName): \(error.localizedDescription)")
                 setStatus(.error("Delete failed: \(error.localizedDescription)"), for: modelType)
             }
         }
@@ -877,14 +896,14 @@ extension ModelManager {
 extension ModelManager {
     /// Log current model status for debugging
     func logCurrentStatus() {
-        print("[ModelManager] === Model Status Report ===")
+        logger.info("=== Model Status Report ===")
         for modelType in ModelType.allCases {
             let status = status(for: modelType)
             let version = modelVersions[modelType]?.version ?? "unknown"
-            print("[ModelManager] \(modelType.displayName): \(status.displayText) (v\(version))")
+            logger.info("\(modelType.displayName): \(status.displayText) (v\(version))")
         }
-        print("[ModelManager] Storage used: \(Self.formatBytes(totalStorageUsed))")
-        print("[ModelManager] \(fallbackSummary)")
-        print("[ModelManager] ===========================")
+        logger.info("Storage used: \(Self.formatBytes(self.totalStorageUsed))")
+        logger.info("\(self.fallbackSummary)")
+        logger.info("===========================")
     }
 }
