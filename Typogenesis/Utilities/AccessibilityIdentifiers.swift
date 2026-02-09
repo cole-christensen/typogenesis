@@ -9,7 +9,6 @@ enum AccessibilityID {
         static let createNewFontButton = "welcome.createNewFont"
         static let importFontButton = "welcome.importFont"
         static let openProjectButton = "welcome.openProject"
-        static let importingIndicator = "welcome.importingIndicator"
     }
 
     // MARK: - Sidebar

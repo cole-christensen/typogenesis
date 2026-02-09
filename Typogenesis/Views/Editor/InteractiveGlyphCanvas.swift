@@ -106,15 +106,9 @@ struct InteractiveGlyphCanvas: View {
     // MARK: - Transform
 
     private func makeTransform(size: CGSize) -> CGAffineTransform {
-        let safeUnitsPerEm = max(CGFloat(metrics.unitsPerEm), 1)
-        let baseScale = min(size.width, size.height) / safeUnitsPerEm * 0.7
-        let finalScale = baseScale * scale
-
-        let centerX = size.width / 2 + offset.width
-        let centerY = size.height / 2 + offset.height
-
-        return CGAffineTransform(translationX: centerX, y: centerY)
-            .scaledBy(x: finalScale, y: -finalScale)
+        GlyphCanvasRenderer.makeTransform(
+            size: size, metrics: metrics, scale: scale, offset: offset
+        )
     }
 
     private func screenToGlyph(_ point: CGPoint, size: CGSize) -> CGPoint {
@@ -289,73 +283,18 @@ struct InteractiveGlyphCanvas: View {
     // MARK: - Drawing
 
     private func drawGrid(context: GraphicsContext, size: CGSize, transform: CGAffineTransform) {
-        let gridSize: CGFloat = 50
-        let inverseTransform = transform.inverted()
-
-        let topLeft = CGPoint(x: 0, y: 0).applying(inverseTransform)
-        let bottomRight = CGPoint(x: size.width, y: size.height).applying(inverseTransform)
-
-        let minX = (topLeft.x / gridSize).rounded(.down) * gridSize
-        let maxX = (bottomRight.x / gridSize).rounded(.up) * gridSize
-        let minY = (bottomRight.y / gridSize).rounded(.down) * gridSize
-        let maxY = (topLeft.y / gridSize).rounded(.up) * gridSize
-
-        var path = Path()
-
-        var x = minX
-        while x <= maxX {
-            let start = CGPoint(x: x, y: minY).applying(transform)
-            let end = CGPoint(x: x, y: maxY).applying(transform)
-            path.move(to: start)
-            path.addLine(to: end)
-            x += gridSize
-        }
-
-        var y = minY
-        while y <= maxY {
-            let start = CGPoint(x: minX, y: y).applying(transform)
-            let end = CGPoint(x: maxX, y: y).applying(transform)
-            path.move(to: start)
-            path.addLine(to: end)
-            y += gridSize
-        }
-
-        context.stroke(path, with: .color(gridColor), lineWidth: 0.5)
+        GlyphCanvasRenderer.drawGrid(
+            context: context, size: size, transform: transform, color: gridColor
+        )
     }
 
     private func drawMetrics(context: GraphicsContext, size: CGSize, transform: CGAffineTransform) {
-        let inverseTransform = transform.inverted()
-        let left = CGPoint(x: 0, y: 0).applying(inverseTransform).x
-        let right = CGPoint(x: size.width, y: 0).applying(inverseTransform).x
-
-        let metricsLines: [(Int, Color)] = [
-            (metrics.baseline, .blue),
-            (metrics.xHeight, .green),
-            (metrics.capHeight, .orange),
-            (metrics.ascender, .red),
-            (metrics.descender, .purple)
-        ]
-
-        for (y, color) in metricsLines {
-            let start = CGPoint(x: left, y: CGFloat(y)).applying(transform)
-            let end = CGPoint(x: right, y: CGFloat(y)).applying(transform)
-
-            var linePath = Path()
-            linePath.move(to: start)
-            linePath.addLine(to: end)
-            context.stroke(linePath, with: .color(color.opacity(0.5)), lineWidth: 1)
-        }
-
-        let lsb = CGPoint(x: CGFloat(viewModel.glyph.leftSideBearing), y: 0).applying(transform)
-        let advance = CGPoint(x: CGFloat(viewModel.glyph.advanceWidth), y: 0).applying(transform)
-
-        var verticalPath = Path()
-        verticalPath.move(to: CGPoint(x: lsb.x, y: 0))
-        verticalPath.addLine(to: CGPoint(x: lsb.x, y: size.height))
-        verticalPath.move(to: CGPoint(x: advance.x, y: 0))
-        verticalPath.addLine(to: CGPoint(x: advance.x, y: size.height))
-
-        context.stroke(verticalPath, with: .color(Color.gray.opacity(0.5)), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+        GlyphCanvasRenderer.drawMetrics(
+            context: context, size: size, transform: transform,
+            metrics: metrics,
+            leftSideBearing: viewModel.glyph.leftSideBearing,
+            advanceWidth: viewModel.glyph.advanceWidth
+        )
     }
 
     private func drawGlyph(context: GraphicsContext, transform: CGAffineTransform) {
