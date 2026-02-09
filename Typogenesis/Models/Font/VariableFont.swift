@@ -92,7 +92,7 @@ struct VariationAxis: Identifiable, Codable, Sendable, Equatable {
 typealias DesignSpaceLocation = [String: CGFloat]
 
 /// Represents a master (source design) at a specific location in design space
-struct FontMaster: Identifiable, Codable, Sendable {
+struct FontMaster: Identifiable, Codable, Sendable, Equatable {
     let id: UUID
     var name: String
     var location: DesignSpaceLocation
@@ -115,7 +115,7 @@ struct FontMaster: Identifiable, Codable, Sendable {
 }
 
 /// A named instance in the design space (e.g., "Bold", "Light")
-struct NamedInstance: Identifiable, Codable, Sendable {
+struct NamedInstance: Identifiable, Codable, Sendable, Equatable {
     let id: UUID
     var name: String
     var location: DesignSpaceLocation
@@ -181,7 +181,7 @@ struct NamedInstance: Identifiable, Codable, Sendable {
 }
 
 /// Configuration for a variable font project
-struct VariableFontConfig: Codable, Sendable {
+struct VariableFontConfig: Codable, Sendable, Equatable {
     var isVariableFont: Bool
     var axes: [VariationAxis]
     var masters: [FontMaster]

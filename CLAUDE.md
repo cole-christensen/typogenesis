@@ -282,6 +282,59 @@ fix(export): correct kerning table generation
 perf(ai): optimize diffusion inference on M1
 ```
 
+## MVVM Architecture Guide
+
+### ViewModel Pattern
+
+All feature ViewModels follow this structure:
+
+```swift
+@MainActor
+final class {Name}ViewModel: ObservableObject {
+    @Published var someState: Type = defaultValue
+    func doWork() async { let service = SomeService(); /* ... */ }
+}
+```
+
+- Views own their ViewModel via `@StateObject`
+- Services (FontParser, FontExporter, etc.) are created on demand inside methods, not stored as properties
+- Use `FileDialogService` protocol for file dialogs (enables testability)
+- No AppKit imports in ViewModels -- all platform code goes through protocols
+
+### Sync Patterns
+
+**Pattern A -- `.onChange` sync** (continuous edits):
+Used by KerningEditor, VariableFontEditor, GlyphEditor. The ViewModel holds mutable state;
+the View syncs changes back to AppState via `.onChange(of: viewModel.property)`.
+
+**Pattern B -- One-shot callback** (button press):
+Used by Generation, HandwritingScanner, Export, Import, Metrics. The ViewModel performs
+an async action and exposes a result. The View applies the result to AppState on a
+confirmation button press.
+
+### Rules
+
+1. Views must be purely declarative -- no business logic
+2. No AppKit in ViewModels
+3. Use `FileDialogService` protocol for file dialogs
+4. Services created on demand, not stored as ViewModel properties
+5. All ViewModels must have corresponding test files in `TypegenesisTests/`
+
+### Test Pattern
+
+```swift
+@Suite("{Name}ViewModel Tests")
+struct {Name}ViewModelTests {
+    @Test("description")
+    @MainActor func testSomething() {
+        let vm = {Name}ViewModel()
+        #expect(vm.state == expected)
+    }
+}
+```
+
+Inject `MockFileDialogService` for ViewModels that use file dialogs.
+
 ## Agent Decision Authority
 
 ### Can Decide
