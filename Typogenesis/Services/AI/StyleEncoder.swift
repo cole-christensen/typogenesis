@@ -556,6 +556,8 @@ final class StyleEncoder: @unchecked Sendable {
         let prediction = try await model.prediction(from: inputFeatures)
 
         // Extract embedding from output (try canonical name, fall back to legacy auto-generated name)
+        // "embedding" is the canonical output name set during CoreML conversion.
+        // "var_338" is the auto-generated name from older conversions without explicit naming.
         let embeddingFeature = prediction.featureValue(for: "embedding")
             ?? prediction.featureValue(for: "var_338")
         guard let embeddingArray = embeddingFeature?.multiArrayValue else {

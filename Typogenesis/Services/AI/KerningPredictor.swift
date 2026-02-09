@@ -305,6 +305,8 @@ final class KerningPredictor: Sendable {
             let prediction = try await kerningModel.prediction(from: input)
 
             // Extract kerning value (try canonical name, fall back to legacy auto-generated name)
+            // "kerning" is the canonical output name set during CoreML conversion.
+            // "var_168" is the auto-generated name from older conversions without explicit naming.
             let outputFeature = prediction.featureValue(for: "kerning")
                 ?? prediction.featureValue(for: "var_168")
             guard let kerningArray = outputFeature?.multiArrayValue else {
@@ -329,6 +331,9 @@ final class KerningPredictor: Sendable {
     }
 
     /// Render a single glyph to a 64x64 grayscale image for model input.
+    // Renders as grayscale since the model expects single-channel input.
+    // The grayscale CGImage is converted to BGRA in createPixelBuffer()
+    // because CVPixelBuffer requires a standard pixel format.
     private func renderSingleGlyph(
         glyph: Glyph,
         metrics: FontMetrics
@@ -468,6 +473,8 @@ final class KerningPredictor: Sendable {
                     let prediction = try await model.prediction(from: input)
 
                     // Try canonical name, fall back to legacy auto-generated name
+                    // "kerning" is the canonical output name set during CoreML conversion.
+                    // "var_168" is the auto-generated name from older conversions without explicit naming.
                     let outputFeature = prediction.featureValue(for: "kerning")
                         ?? prediction.featureValue(for: "var_168")
                     guard let kerningArray = outputFeature?.multiArrayValue else {

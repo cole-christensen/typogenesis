@@ -8,6 +8,7 @@ Usage:
 """
 
 import argparse
+import contextlib
 import hashlib
 import json
 import logging
@@ -119,9 +120,49 @@ def extract_kerning_pairs(tt_font: TTFont) -> list[dict]:
                                         if left_char and right_char:
                                             pairs[(left_char, right_char)] = val
                         elif hasattr(subtable, "Format") and subtable.Format == 2:
-                            # Format 2: class-based pairs - more complex
-                            # Skip for now; individual pairs cover most critical cases
-                            pass
+                            # Format 2: class-based kerning pairs
+                            try:
+                                class1 = subtable.ClassDef1.classDefs if hasattr(subtable, "ClassDef1") else {}
+                                class2 = subtable.ClassDef2.classDefs if hasattr(subtable, "ClassDef2") else {}
+
+                                # Build reverse maps: class_id -> glyph_names
+                                reverse1: dict[int, list[str]] = {}
+                                for glyph_name, cls_id in class1.items():
+                                    reverse1.setdefault(cls_id, []).append(glyph_name)
+
+                                reverse2: dict[int, list[str]] = {}
+                                for glyph_name, cls_id in class2.items():
+                                    reverse2.setdefault(cls_id, []).append(glyph_name)
+
+                                # Build glyph name -> character map from cmap
+                                cmap_table = tt_font.getBestCmap()
+                                if cmap_table is None:
+                                    continue
+                                char_map = {}
+                                for codepoint, gn in cmap_table.items():
+                                    with contextlib.suppress(ValueError, OverflowError):
+                                        char_map[gn] = chr(codepoint)
+
+                                for i, record1 in enumerate(subtable.Class1Record):
+                                    left_glyphs = reverse1.get(i, [])
+                                    for j, record2 in enumerate(record1.Class2Record):
+                                        if (
+                                            hasattr(record2, "Value1")
+                                            and record2.Value1
+                                            and record2.Value1.XAdvance != 0
+                                        ):
+                                            right_glyphs = reverse2.get(j, [])
+                                            kern_value = record2.Value1.XAdvance
+                                            for lg in left_glyphs:
+                                                for rg in right_glyphs:
+                                                    lc = char_map.get(lg)
+                                                    rc = char_map.get(rg)
+                                                    if lc and rc:
+                                                        pair_key = (lc, rc)
+                                                        if pair_key not in pairs:
+                                                            pairs[pair_key] = kern_value
+                            except Exception as e:
+                                logger.debug(f"Failed to parse Format 2 kerning: {e}")
         except (AttributeError, IndexError):
             # Malformed GPOS table, skip
             pass

@@ -156,7 +156,11 @@ class GlyphDataset(Dataset):
 
         # Load image
         img_path = self.data_dir / entry["image"]
-        img = Image.open(img_path)
+        try:
+            img = Image.open(img_path).convert("L")
+        except Exception as e:
+            logger.warning(f"Failed to load {img_path}: {e}, using blank image")
+            img = Image.new("L", (self.image_size, self.image_size), 0)
         img_tensor = self.transform(img)
 
         # Character index

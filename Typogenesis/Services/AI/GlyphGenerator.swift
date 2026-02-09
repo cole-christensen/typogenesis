@@ -247,42 +247,25 @@ final class GlyphGenerator: @unchecked Sendable {
             )
         }
 
-        let startTime = Date()
-
-        do {
-            // Prepare conditioning based on mode
-            let conditioning = try prepareConditioning(
-                character: character,
-                mode: mode,
-                metrics: metrics
-            )
-
-            // Generate latent representation
-            let outline = try await runDiffusion(
-                conditioning: conditioning,
-                settings: settings
-            )
-
-            // Create glyph
-            let bounds = outline.boundingBox
-            let glyph = Glyph(
-                character: character,
-                outline: outline,
-                advanceWidth: bounds.width + Int(CGFloat(metrics.unitsPerEm) * SpacingRatio.rightSideBearing),
-                leftSideBearing: Int(CGFloat(metrics.unitsPerEm) * SpacingRatio.leftSideBearing)
-            )
-
-            let generationTime = Date().timeIntervalSince(startTime)
-
-            return GenerationResult(
-                glyph: glyph,
-                confidence: ConfidenceScore.aiModel,
-                generationTime: generationTime
-            )
-        } catch {
-            recordFailed()
-            throw error
+        // Extract style from mode and delegate to generateWithModel
+        let style: StyleEncoder.FontStyle
+        switch mode {
+        case .fromScratch(let s):
+            style = s
+        case .completePartial(_, let s):
+            style = s
+        case .variation(_, _):
+            style = StyleEncoder.FontStyle.default
+        case .interpolate(_, _, _):
+            style = StyleEncoder.FontStyle.default
         }
+
+        return try await generateWithModel(
+            character: character,
+            style: style,
+            metrics: metrics,
+            settings: settings
+        )
     }
 
     /// Generate multiple glyphs for a character set
@@ -382,8 +365,9 @@ final class GlyphGenerator: @unchecked Sendable {
             )
         } catch {
             // Model inference failed - fall back to template generation
+            // WARNING: User will receive a geometric placeholder, NOT AI-generated output
             recordFailed()
-            Self.logger.warning("Model inference failed: \(error.localizedDescription), falling back to template")
+            Self.logger.error("AI model inference failed: \(error.localizedDescription). Returning PLACEHOLDER glyph (not AI output). User will see geometric fallback.")
             return try await generatePlaceholder(
                 character: character,
                 mode: .fromScratch(style: style),
@@ -426,7 +410,11 @@ final class GlyphGenerator: @unchecked Sendable {
         let scheduler = FlowMatchingScheduler(numSteps: settings.steps)
 
         // Seed the RNG
-        var rng: RandomNumberGenerator = settings.seed.map { SeededRNG(seed: $0) } as RandomNumberGenerator? ?? SystemRandomNumberGenerator() as RandomNumberGenerator
+        var rng: any RandomNumberGenerator = if let seed = settings.seed {
+            SeededRNG(seed: seed) as any RandomNumberGenerator
+        } else {
+            SystemRandomNumberGenerator() as any RandomNumberGenerator
+        }
 
         // Generate initial Gaussian noise
         var sample = generateGaussianNoise(count: pixelCount, using: &rng)
@@ -520,6 +508,9 @@ final class GlyphGenerator: @unchecked Sendable {
 
     /// Convert a flat Float array to an MLMultiArray with the given shape.
     private func floatArrayToMLMultiArray(_ array: [Float], shape: [NSNumber]) throws -> MLMultiArray {
+        let expectedCount = shape.reduce(1) { $0 * $1.intValue }
+        precondition(array.count == expectedCount,
+                     "Array count \(array.count) doesn't match shape \(shape) (expected \(expectedCount))")
         let mlArray = try MLMultiArray(shape: shape, dataType: .float32)
         let ptr = mlArray.dataPointer.bindMemory(to: Float.self, capacity: array.count)
         for i in 0..<array.count {
@@ -530,6 +521,7 @@ final class GlyphGenerator: @unchecked Sendable {
 
     /// Convert an MLMultiArray to a flat Float array.
     private func mlMultiArrayToFloatArray(_ mlArray: MLMultiArray) -> [Float] {
+        precondition(mlArray.dataType == .float32, "Expected float32 MLMultiArray, got \(mlArray.dataType)")
         let count = mlArray.count
         let ptr = mlArray.dataPointer.bindMemory(to: Float.self, capacity: count)
         return Array(UnsafeBufferPointer(start: ptr, count: count))
@@ -703,116 +695,67 @@ final class GlyphGenerator: @unchecked Sendable {
 
     // MARK: - Private Methods
 
-    private struct Conditioning {
-        let characterEmbedding: [Float]
-        let styleEmbedding: [Float]
-        let targetMetrics: FontMetrics
-        let baseOutline: GlyphOutline?
-    }
-
-    private func prepareConditioning(
-        character: Character,
-        mode: GenerationMode,
-        metrics: FontMetrics
-    ) throws -> Conditioning {
-        // Create character embedding (one-hot or learned)
-        let charEmbedding = createCharacterEmbedding(character)
-
-        // Extract style embedding based on mode
-        let styleEmbedding: [Float]
-        var baseOutline: GlyphOutline? = nil
-
-        switch mode {
-        case .fromScratch(let style):
-            styleEmbedding = style.embedding.isEmpty ?
-                createDefaultStyleEmbedding() : style.embedding
-
-        case .completePartial(let partial, let style):
-            styleEmbedding = style.embedding.isEmpty ?
-                createDefaultStyleEmbedding() : style.embedding
-            baseOutline = partial
-
-        case .variation(let base, _):
-            styleEmbedding = createEmbeddingFromGlyph(base)
-            baseOutline = base.outline
-
-        case .interpolate(let glyphA, let glyphB, let t):
-            let embeddingA = createEmbeddingFromGlyph(glyphA)
-            let embeddingB = createEmbeddingFromGlyph(glyphB)
-            styleEmbedding = interpolateEmbeddings(embeddingA, embeddingB, t: t)
-        }
-
-        return Conditioning(
-            characterEmbedding: charEmbedding,
-            styleEmbedding: styleEmbedding,
-            targetMetrics: metrics,
-            baseOutline: baseOutline
-        )
-    }
-
-    private func runDiffusion(
-        conditioning: Conditioning,
-        settings: GenerationSettings
-    ) async throws -> GlyphOutline {
-        // Get the model (caller already verified it exists)
-        let model = await MainActor.run { ModelManager.shared.glyphDiffusion }
-        guard let diffusionModel = model else {
-            throw GeneratorError.modelNotLoaded
-        }
-
-        // Build mask from base outline if doing partial completion
-        let mask: [Float]?
-        if let baseOutline = conditioning.baseOutline {
-            mask = rasterizeOutlineToMask(baseOutline, size: DiffusionParams.imageSize)
-        } else {
-            mask = nil
-        }
-
-        // Determine character from embedding (find most prominent index)
-        // This is a fallback — the main generate() path uses generateWithModel() instead
-        let charIndex: Int32 = DiffusionParams.nullClassIndex
-
-        // Run diffusion sampling
-        let outputImage = try await runDiffusionSampling(
-            model: diffusionModel,
-            character: Character(UnicodeScalar(Int(charIndex) < 26 ? Int(charIndex) + 97 : 65)!),
-            styleEmbedding: conditioning.styleEmbedding,
-            settings: settings,
-            mask: mask
-        )
-
-        recordAI()
-
-        // Post-process to outline
-        return try postProcessModelOutput(
-            output: outputImage,
-            metrics: conditioning.targetMetrics
-        )
-    }
-
     /// Rasterize a GlyphOutline to a binary mask for partial completion conditioning.
     /// Returns a flat array of size*size floats where 1.0 = glyph, 0.0 = background.
+    ///
+    /// Uses Core Graphics to properly fill contour interiors rather than just marking
+    /// individual on-curve points. The outline's coordinate system is scaled to fit the
+    /// image size with Y flipped (glyph coords have Y-up, image has Y-down).
     private func rasterizeOutlineToMask(_ outline: GlyphOutline, size: Int) -> [Float] {
-        // Simple bounding-box based rasterization
         let bounds = outline.boundingBox
         guard bounds.width > 0, bounds.height > 0 else {
             return [Float](repeating: 0, count: size * size)
         }
 
-        var mask = [Float](repeating: 0, count: size * size)
-        let scale = Float(size) / Float(max(bounds.width, bounds.height))
+        // Create a grayscale 8-bit CGContext
+        let bytesPerRow = size
+        var pixelBuffer = [UInt8](repeating: 0, count: size * size)
+        guard let context = CGContext(
+            data: &pixelBuffer,
+            width: size,
+            height: size,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: CGColorSpaceCreateDeviceGray(),
+            bitmapInfo: CGImageAlphaInfo.none.rawValue
+        ) else {
+            return [Float](repeating: 0, count: size * size)
+        }
 
+        // Calculate scale to fit the outline into the image, preserving aspect ratio
+        let scaleX = CGFloat(size) / CGFloat(bounds.width)
+        let scaleY = CGFloat(size) / CGFloat(bounds.height)
+        let scale = min(scaleX, scaleY)
+
+        // Build a CGPath from the outline contours
+        let path = CGMutablePath()
         for contour in outline.contours {
-            for point in contour.points {
-                let px = Int(Float(point.position.x - CGFloat(bounds.minX)) * scale)
-                let py = Int(Float(CGFloat(bounds.maxY) - point.position.y) * scale)
-                if px >= 0 && px < size && py >= 0 && py < size {
-                    mask[py * size + px] = 1.0
+            guard !contour.points.isEmpty else { continue }
+
+            for (index, point) in contour.points.enumerated() {
+                // Transform: translate to origin, scale, flip Y
+                let x = (point.position.x - CGFloat(bounds.minX)) * scale
+                let y = (CGFloat(bounds.maxY) - point.position.y) * scale
+
+                if index == 0 {
+                    path.move(to: CGPoint(x: x, y: y))
+                } else {
+                    path.addLine(to: CGPoint(x: x, y: y))
                 }
+            }
+
+            if contour.isClosed {
+                path.closeSubpath()
             }
         }
 
-        return mask
+        // Fill the path with white (1.0)
+        context.setFillColor(CGColor.white)
+        context.addPath(path)
+        context.fillPath()
+
+        // Convert pixel buffer to [Float] (0.0 or 1.0)
+        return pixelBuffer.map { $0 >= 128 ? Float(1.0) : Float(0.0) }
     }
 
     private func generatePlaceholder(
@@ -1081,22 +1024,6 @@ final class GlyphGenerator: @unchecked Sendable {
         }
 
         return GlyphOutline(contours: interpolatedContours)
-    }
-
-    private func createCharacterEmbedding(_ character: Character) -> [Float] {
-        // Create a simple embedding from Unicode code point
-        var embedding = [Float](repeating: 0, count: 128)
-
-        for (index, scalar) in character.unicodeScalars.enumerated() {
-            let value = Float(scalar.value)
-            let normalized = value / 65536.0
-
-            if index < embedding.count {
-                embedding[index] = normalized
-            }
-        }
-
-        return embedding
     }
 
     private func createDefaultStyleEmbedding() -> [Float] {

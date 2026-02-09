@@ -32,6 +32,8 @@ CRITICAL_PAIRS = [
     ("L", "T"), ("L", "V"), ("L", "W"), ("L", "Y"),
     ("P", "a"), ("P", "e"), ("P", "o"),
     ("F", "a"), ("F", "e"), ("F", "o"),
+    ("f", "i"), ("f", "f"), ("f", "l"),  # Ligature-related pairs
+    ("r", "."), ("r", ","),              # Punctuation spacing
 ]
 
 

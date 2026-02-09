@@ -17,6 +17,12 @@ import torch
 from PIL import Image, ImageFilter
 from torchvision import transforms
 
+try:
+    from scipy.ndimage import gaussian_filter, map_coordinates
+except ImportError:
+    gaussian_filter = None
+    map_coordinates = None
+
 
 class ElasticDeformation:
     """Apply small elastic deformation to simulate handwriting variation.
@@ -36,6 +42,9 @@ class ElasticDeformation:
         self.sigma = sigma
 
     def __call__(self, img: Image.Image) -> Image.Image:
+        if gaussian_filter is None or map_coordinates is None:
+            return img  # scipy not available, skip elastic deformation
+
         w, h = img.size
         rng = np.random.default_rng()
 
@@ -44,7 +53,6 @@ class ElasticDeformation:
         dy = rng.standard_normal((h, w)).astype(np.float32)
 
         # Smooth with Gaussian
-        from scipy.ndimage import gaussian_filter
         dx = gaussian_filter(dx, self.sigma) * self.alpha
         dy = gaussian_filter(dy, self.sigma) * self.alpha
 
@@ -55,7 +63,6 @@ class ElasticDeformation:
 
         # Apply displacement via map_coordinates
         arr = np.array(img, dtype=np.float32)
-        from scipy.ndimage import map_coordinates
         result = map_coordinates(arr, [y_new, x_new], order=1, mode="constant", cval=0)
 
         return Image.fromarray(result.astype(np.uint8), mode=img.mode)

@@ -72,6 +72,15 @@ class KerningDataset(Dataset):
 
         logger.info(f"Loaded {len(self.entries)} kerning pairs for split '{split}'")
 
+        # Validate kerning range
+        if self.entries:
+            actual_max = max(abs(e["kerning"]) for e in self.entries)
+            if actual_max > self.max_kerning:
+                logger.warning(
+                    f"Found kerning values up to {actual_max:.1f}, exceeding max_kerning={self.max_kerning}. "
+                    f"Values will be clipped. Consider increasing max_kerning."
+                )
+
         # Count nonzero vs zero pairs
         nonzero = sum(1 for e in self.entries if e["kerning"] != 0)
         logger.info(f"  Non-zero kerning: {nonzero}, Zero kerning: {len(self.entries) - nonzero}")
@@ -101,8 +110,13 @@ class KerningDataset(Dataset):
         left_path = self.data_dir / entry["left_image"]
         right_path = self.data_dir / entry["right_image"]
 
-        left_img = Image.open(left_path)
-        right_img = Image.open(right_path)
+        try:
+            left_img = Image.open(left_path).convert("L")
+            right_img = Image.open(right_path).convert("L")
+        except Exception as e:
+            logger.warning(f"Failed to load kerning images: {e}, using blank")
+            left_img = Image.new("L", (self.image_size, self.image_size), 0)
+            right_img = Image.new("L", (self.image_size, self.image_size), 0)
 
         left_tensor = self.transform(left_img)
         right_tensor = self.transform(right_img)

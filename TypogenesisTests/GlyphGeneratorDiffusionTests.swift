@@ -120,18 +120,30 @@ struct GlyphGeneratorDiffusionTests {
 
     // MARK: - GenerationSettings
 
-    @Test("Generation settings are preserved correctly")
-    func testSettingsPreservation() {
-        let settings = GlyphGenerator.GenerationSettings(
+    @Test("Generation settings presets have valid values")
+    func testSettingsPresets() {
+        let fast = GlyphGenerator.GenerationSettings.fast
+        let quality = GlyphGenerator.GenerationSettings.quality
+        let defaults = GlyphGenerator.GenerationSettings.default
+
+        #expect(fast.steps > 0, "Fast preset must have positive steps")
+        #expect(quality.steps > fast.steps, "Quality preset should have more steps than fast")
+        #expect(defaults.steps > 0, "Default preset must have positive steps")
+        #expect(fast.guidanceScale >= 1.0, "Guidance scale must be >= 1.0")
+        #expect(quality.guidanceScale >= 1.0, "Guidance scale must be >= 1.0")
+        #expect(defaults.guidanceScale >= 1.0, "Default guidance scale must be >= 1.0")
+
+        // Verify custom settings are constructed correctly
+        let custom = GlyphGenerator.GenerationSettings(
             steps: 30,
             guidanceScale: 5.0,
             seed: 42,
             temperature: 0.8
         )
-        #expect(settings.steps == 30)
-        #expect(settings.guidanceScale == 5.0)
-        #expect(settings.seed == 42)
-        #expect(settings.temperature == 0.8)
+        #expect(custom.steps == 30)
+        #expect(custom.guidanceScale == 5.0)
+        #expect(custom.seed == 42)
+        #expect(custom.temperature == 0.8)
     }
 
     @Test("Seeded generation is deterministic in fallback mode")
@@ -161,9 +173,21 @@ struct GlyphGeneratorDiffusionTests {
             settings: settings
         )
 
-        // In fallback mode, same inputs should produce same outputs
-        #expect(result1.glyph.outline.contours.count == result2.glyph.outline.contours.count)
-        #expect(result1.glyph.advanceWidth == result2.glyph.advanceWidth)
+        // Compare actual contour structure, not just counts
+        #expect(result1.glyph.outline.contours.count == result2.glyph.outline.contours.count,
+                "Contour count must match for same seed and character")
+        for (c1, c2) in zip(result1.glyph.outline.contours, result2.glyph.outline.contours) {
+            #expect(c1.points.count == c2.points.count,
+                    "Contour point counts should match for same seed")
+            for (p1, p2) in zip(c1.points, c2.points) {
+                #expect(abs(p1.position.x - p2.position.x) < 0.01,
+                        "X coordinates should match for same seed: \(p1.position.x) vs \(p2.position.x)")
+                #expect(abs(p1.position.y - p2.position.y) < 0.01,
+                        "Y coordinates should match for same seed: \(p1.position.y) vs \(p2.position.y)")
+            }
+        }
+        #expect(result1.glyph.advanceWidth == result2.glyph.advanceWidth,
+                "Advance width must match for same seed and character")
     }
 
     // MARK: - generateWithModel fallback
@@ -189,6 +213,9 @@ struct GlyphGeneratorDiffusionTests {
 
         // Should have produced a valid glyph via fallback
         #expect(result.glyph.character == "B")
-        #expect(!result.glyph.outline.isEmpty)
+        #expect(!result.glyph.outline.isEmpty, "Fallback must produce visible content")
+        // Verify fallback was triggered — template generation has confidence 0.0
+        #expect(result.confidence < 0.5,
+                "Without model loaded, confidence should be low (fallback), got \(result.confidence)")
     }
 }

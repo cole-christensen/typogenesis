@@ -62,9 +62,13 @@ def split_by_font_family(
         # (works for Google Fonts: /fonts/roboto/Regular.ttf → "roboto")
         generic_dirs = {"Fonts", "Supplemental", "fonts", "ofl", "apache", ""}
         if font_path:
-            parent_name = Path(font_path).parent.name
+            parent = Path(font_path).parent
+            parent_name = parent.name
+            grandparent_name = parent.parent.name if parent.parent else ""
             if parent_name not in generic_dirs:
                 family_key = parent_name
+            elif grandparent_name and grandparent_name not in generic_dirs:
+                family_key = grandparent_name
             else:
                 # Fallback: strip style suffixes from font name
                 style_suffixes = {"Bold", "Italic", "Regular", "Light", "Medium", "Thin",

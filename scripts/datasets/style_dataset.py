@@ -112,9 +112,10 @@ class StyleDataset(Dataset):
             tensor = self.transform(img)
             glyphs.append(tensor)
 
-        # Pad if needed
+        # Pad if needed (random sampling to avoid duplicate pairs)
         while len(glyphs) < self.glyphs_per_font:
-            glyphs.append(glyphs[-1].clone())
+            pad_idx = random.randint(0, len(glyphs) - 1)
+            glyphs.append(glyphs[pad_idx].clone())
 
         return torch.stack(glyphs), idx
 
