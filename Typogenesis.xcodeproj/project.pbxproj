@@ -10,6 +10,9 @@
 		0231806CEDFE49AB11CEECC2 /* GenerateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4E0A4461369C41C8545EB12 /* GenerateView.swift */; };
 		DSPE11223344556677889901 /* DesignSpaceExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = DSPE11223344556677889900 /* DesignSpaceExporter.swift */; };
 		DSPT11223344556677889901 /* DesignSpaceExporterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DSPT11223344556677889900 /* DesignSpaceExporterTests.swift */; };
+		8706DF23D7601EFC1A281F94 /* FlowMatchingScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA2CD1418EC4646A43940374 /* FlowMatchingScheduler.swift */; };
+		039F3CD9354F089AE77460B4 /* FlowMatchingSchedulerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EC7187C5C71BF54B7A0B01D /* FlowMatchingSchedulerTests.swift */; };
+		142AB4232B9A768A715D465E /* GlyphGeneratorDiffusionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4DA30BC5E5B7B009E0451B1 /* GlyphGeneratorDiffusionTests.swift */; };
 		0C39F3CC06ED8D0385E900D3 /* UFOExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B3530E4389E2268EC9216AF /* UFOExporter.swift */; };
 		0E0177A649C1DEE582516FE6 /* InteractiveGlyphCanvas.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BD24C87352C43307CA9DD44 /* InteractiveGlyphCanvas.swift */; };
 		1338524D8DCEABB54C1FB13E /* GlyphGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B88EA1F6767B72DE7E289BC5 /* GlyphGenerator.swift */; };
@@ -169,6 +172,9 @@
 		D60714B67817036B6D637342 /* EdgeDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeDetector.swift; sourceTree = "<group>"; };
 		DSPE11223344556677889900 /* DesignSpaceExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSpaceExporter.swift; sourceTree = "<group>"; };
 		DSPT11223344556677889900 /* DesignSpaceExporterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSpaceExporterTests.swift; sourceTree = "<group>"; };
+		FA2CD1418EC4646A43940374 /* FlowMatchingScheduler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlowMatchingScheduler.swift; sourceTree = "<group>"; };
+		8EC7187C5C71BF54B7A0B01D /* FlowMatchingSchedulerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlowMatchingSchedulerTests.swift; sourceTree = "<group>"; };
+		D4DA30BC5E5B7B009E0451B1 /* GlyphGeneratorDiffusionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlyphGeneratorDiffusionTests.swift; sourceTree = "<group>"; };
 		D92878EA9273E84352E8317D /* UFOExporterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UFOExporterTests.swift; sourceTree = "<group>"; };
 		D9F74D8794F57D39C9389FEE /* ImageProcessingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageProcessingTests.swift; sourceTree = "<group>"; };
 		E0F37AEEEA9DD181CEFB4C12 /* StyleEncoderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StyleEncoderTests.swift; sourceTree = "<group>"; };
@@ -210,13 +216,14 @@
 		239D97195253AD47B0D0A7A3 /* AI */ = {
 			isa = PBXGroup;
 			children = (
+				CLDI11223344556677889900 /* CloudInference.swift */,
+				FA2CD1418EC4646A43940374 /* FlowMatchingScheduler.swift */,
 				B88EA1F6767B72DE7E289BC5 /* GlyphGenerator.swift */,
+				317681B2D0631E59DCC9F46A /* GlyphTemplates.swift */,
 				4BF3E73864C636E4385756EC /* KerningPredictor.swift */,
 				2FECE8324DFBB65BE2C25066 /* ModelManager.swift */,
-				57301A8BCBF99F359EAE1D72 /* StyleEncoder.swift */,
-				CLDI11223344556677889900 /* CloudInference.swift */,
-				317681B2D0631E59DCC9F46A /* GlyphTemplates.swift */,
 				BD311DAD95091ACB270EDE13 /* StrokeBuilder.swift */,
+				57301A8BCBF99F359EAE1D72 /* StyleEncoder.swift */,
 			);
 			path = AI;
 			sourceTree = "<group>";
@@ -301,11 +308,13 @@
 				AIGE11223344556677889900 /* AIGenerationExtendedTests.swift */,
 				DSPT11223344556677889900 /* DesignSpaceExporterTests.swift */,
 				E2E111223344556677889900 /* FontCreationE2ETests.swift */,
+				8EC7187C5C71BF54B7A0B01D /* FlowMatchingSchedulerTests.swift */,
 				3331BC7CD8ED887A2EDD2661 /* FontIOTests.swift */,
 				GLYE11223344556677889900 /* GlyphEditorE2ETests.swift */,
 				53FF13BF73687420150C72F7 /* FontProjectTests.swift */,
 				B688CF29A3C245D8925F3455 /* GlyphEditorViewModelTests.swift */,
 				96F04F91010EDA9DB8304ABA /* GlyphGeneratorTests.swift */,
+				D4DA30BC5E5B7B009E0451B1 /* GlyphGeneratorDiffusionTests.swift */,
 				GLYI11223344556677889900 /* GlyphInterpolationTests.swift */,
 				D9F74D8794F57D39C9389FEE /* ImageProcessingTests.swift */,
 				3E43AB0FA68BEED2A3531B7E /* KerningPredictorTests.swift */,
@@ -638,12 +647,14 @@
 			buildActionMask = 2147483647;
 			files = (
 				AIGE11223344556677889901 /* AIGenerationExtendedTests.swift in Sources */,
+				039F3CD9354F089AE77460B4 /* FlowMatchingSchedulerTests.swift in Sources */,
 				E2E111223344556677889901 /* FontCreationE2ETests.swift in Sources */,
 				994FE52B84454449B6AE793F /* FontIOTests.swift in Sources */,
 				GLYE11223344556677889901 /* GlyphEditorE2ETests.swift in Sources */,
 				62603364B4E02105DA0777F3 /* FontProjectTests.swift in Sources */,
 				52AADF958A0F695BC32FCBDE /* GlyphEditorViewModelTests.swift in Sources */,
 				1554554B2F6B15B1B30D8463 /* GlyphGeneratorTests.swift in Sources */,
+				142AB4232B9A768A715D465E /* GlyphGeneratorDiffusionTests.swift in Sources */,
 				6391B7CF333D035B465DC55D /* ImageProcessingTests.swift in Sources */,
 				900D491A9C1E9E6C8CD42ADA /* KerningPredictorTests.swift in Sources */,
 				CCDD11223344556677889903 /* ModelManagerBugTests.swift in Sources */,
@@ -686,6 +697,7 @@
 				953E24BA848B117B83281B24 /* ContourTracer.swift in Sources */,
 				C1F8E1C8787C96259F29CEA5 /* EdgeDetector.swift in Sources */,
 				3A17C993BCCD2C7AC7722A96 /* ExportSheet.swift in Sources */,
+				8706DF23D7601EFC1A281F94 /* FlowMatchingScheduler.swift in Sources */,
 				76D43520A853D4D1F4B5149D /* FontExporter.swift in Sources */,
 				17D1A9D61567C77CEE12282B /* FontParser.swift in Sources */,
 				F3E2E10B5A5D7134BBBF58D2 /* FontPreviewPanel.swift in Sources */,

@@ -253,7 +253,10 @@ final class KerningPredictor: Sendable {
         return pairs
     }
 
-    /// Predict kerning for a single pair using the CoreML model
+    /// Predict kerning for a single pair using the CoreML model.
+    ///
+    /// The KerningNet model takes two separate 64x64 grayscale glyph images
+    /// (`left_glyph` and `right_glyph`) and outputs a single kerning value.
     private func predictPairWithModel(
         left: Character,
         right: Character,
@@ -264,12 +267,14 @@ final class KerningPredictor: Sendable {
             return nil
         }
 
-        // Render pair to image for model input
-        guard let pairImage = renderPair(
-            leftGlyph: leftGlyph,
-            rightGlyph: rightGlyph,
-            metrics: project.metrics,
-            spacing: 0
+        // Render each glyph individually for the model (not as a pair)
+        guard let leftImage = renderSingleGlyph(
+            glyph: leftGlyph,
+            metrics: project.metrics
+        ),
+        let rightImage = renderSingleGlyph(
+            glyph: rightGlyph,
+            metrics: project.metrics
         ) else {
             return nil
         }
@@ -288,18 +293,21 @@ final class KerningPredictor: Sendable {
         }
 
         do {
-            // Create model input using MLDictionaryFeatureProvider (model-generated types unavailable until models compiled)
-            let pixelBuffer = try createPixelBuffer(from: pairImage)
+            // Create separate pixel buffers for left and right glyphs
+            let leftBuffer = try createPixelBuffer(from: leftImage)
+            let rightBuffer = try createPixelBuffer(from: rightImage)
             let input = try MLDictionaryFeatureProvider(dictionary: [
-                "image": MLFeatureValue(pixelBuffer: pixelBuffer)
+                "left_glyph": MLFeatureValue(pixelBuffer: leftBuffer),
+                "right_glyph": MLFeatureValue(pixelBuffer: rightBuffer),
             ])
 
-            // Run inference - model.prediction is async in Swift 6
+            // Run inference
             let prediction = try await kerningModel.prediction(from: input)
 
-            // Extract kerning value from output
-            guard let outputFeature = prediction.featureValue(for: "kerning"),
-                  let kerningArray = outputFeature.multiArrayValue else {
+            // Extract kerning value (try canonical name, fall back to legacy auto-generated name)
+            let outputFeature = prediction.featureValue(for: "kerning")
+                ?? prediction.featureValue(for: "var_168")
+            guard let kerningArray = outputFeature?.multiArrayValue else {
                 throw PredictorError.predictionFailed("Model did not produce valid output")
             }
 
@@ -318,6 +326,62 @@ final class KerningPredictor: Sendable {
                 settings: .default
             )
         }
+    }
+
+    /// Render a single glyph to a 64x64 grayscale image for model input.
+    private func renderSingleGlyph(
+        glyph: Glyph,
+        metrics: FontMetrics
+    ) -> CGImage? {
+        let size = RenderParams.imageSize
+        let scale = RenderParams.scaleFactor
+
+        guard let context = CGContext(
+            data: nil,
+            width: size,
+            height: size,
+            bitsPerComponent: 8,
+            bytesPerRow: size,
+            space: CGColorSpaceCreateDeviceGray(),
+            bitmapInfo: 0
+        ) else {
+            return nil
+        }
+
+        // White background
+        context.setFillColor(gray: 1.0, alpha: 1.0)
+        context.fill(CGRect(x: 0, y: 0, width: size, height: size))
+
+        // Scale glyph to fit within the image
+        let bounds = glyph.outline.boundingBox
+        guard bounds.width > 0, bounds.height > 0 else { return context.makeImage() }
+
+        let glyphScale = min(
+            CGFloat(size) * scale / CGFloat(bounds.width),
+            CGFloat(size) * scale / CGFloat(bounds.height)
+        )
+        let offsetX = (CGFloat(size) - CGFloat(bounds.width) * glyphScale) / 2.0 - CGFloat(bounds.minX) * glyphScale
+        let offsetY = (CGFloat(size) - CGFloat(bounds.height) * glyphScale) / 2.0 - CGFloat(bounds.minY) * glyphScale
+
+        context.translateBy(x: offsetX, y: offsetY)
+        context.scaleBy(x: glyphScale, y: glyphScale)
+
+        // Draw glyph contours
+        context.setFillColor(gray: 0.0, alpha: 1.0)
+        for contour in glyph.outline.contours {
+            guard !contour.points.isEmpty else { continue }
+            context.beginPath()
+            context.move(to: contour.points[0].position)
+            for point in contour.points.dropFirst() {
+                context.addLine(to: point.position)
+            }
+            if contour.isClosed {
+                context.closePath()
+            }
+            context.fillPath()
+        }
+
+        return context.makeImage()
     }
 
     /// Predict kerning for multiple pairs in batch (more efficient)
@@ -373,36 +437,40 @@ final class KerningPredictor: Sendable {
             let batchEnd = min(batchStart + ModelInferenceParams.batchSize, pairs.count)
             let batch = Array(pairs[batchStart..<batchEnd])
 
-            // Render all pairs in batch
-            var batchInputs: [(Character, Character, CGImage)] = []
+            // Render individual glyphs in batch
+            var batchInputs: [(Character, Character, CGImage, CGImage)] = []
             for (left, right) in batch {
                 guard let leftGlyph = project.glyphs[left],
                       let rightGlyph = project.glyphs[right],
-                      let pairImage = renderPair(
-                          leftGlyph: leftGlyph,
-                          rightGlyph: rightGlyph,
-                          metrics: project.metrics,
-                          spacing: 0
+                      let leftImage = renderSingleGlyph(
+                          glyph: leftGlyph,
+                          metrics: project.metrics
+                      ),
+                      let rightImage = renderSingleGlyph(
+                          glyph: rightGlyph,
+                          metrics: project.metrics
                       ) else {
                     continue
                 }
-                batchInputs.append((left, right, pairImage))
+                batchInputs.append((left, right, leftImage, rightImage))
             }
 
             // Run inference on batch
-            for (left, right, pairImage) in batchInputs {
+            for (left, right, leftImage, rightImage) in batchInputs {
                 do {
-                    // Create model input using MLDictionaryFeatureProvider (model-generated types unavailable until models compiled)
-                    let pixelBuffer = try createPixelBuffer(from: pairImage)
+                    let leftBuffer = try createPixelBuffer(from: leftImage)
+                    let rightBuffer = try createPixelBuffer(from: rightImage)
                     let input = try MLDictionaryFeatureProvider(dictionary: [
-                        "image": MLFeatureValue(pixelBuffer: pixelBuffer)
+                        "left_glyph": MLFeatureValue(pixelBuffer: leftBuffer),
+                        "right_glyph": MLFeatureValue(pixelBuffer: rightBuffer),
                     ])
 
-                    // Run inference - model.prediction is async in Swift 6
                     let prediction = try await model.prediction(from: input)
 
-                    guard let outputFeature = prediction.featureValue(for: "kerning"),
-                          let kerningArray = outputFeature.multiArrayValue else {
+                    // Try canonical name, fall back to legacy auto-generated name
+                    let outputFeature = prediction.featureValue(for: "kerning")
+                        ?? prediction.featureValue(for: "var_168")
+                    guard let kerningArray = outputFeature?.multiArrayValue else {
                         continue
                     }
 

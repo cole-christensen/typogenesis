@@ -3,30 +3,21 @@ import CoreGraphics
 @preconcurrency import CoreML
 import CoreImage
 import AppKit
+import Accelerate
 import os.log
 
-/// Service for generating glyphs using template-based algorithmic generation.
+/// Service for generating glyphs using AI diffusion or template-based fallback.
 ///
-/// **HONEST STATUS:** This service uses parametric stroke templates to generate
-/// recognizable letterforms. There is NO AI/ML involved - the code path for
-/// diffusion-based generation exists but requires trained models that don't exist.
+/// When a trained GlyphDiffusion CoreML model is available, this service runs a
+/// flow-matching diffusion loop (50 Euler steps) to generate glyph images, then
+/// converts them to vector outlines via threshold → contour trace → bezier fit.
 ///
-/// ## What Works Now (Template Generation)
-/// - A-Z, a-z, 0-9, and common punctuation have stroke-based templates
-/// - Style parameters (weight, contrast, roundness, slant) affect output
-/// - Proper uppercase/lowercase height differentiation
-/// - Serif style variations (slab, bracketed, hairline)
-///
-/// ## What Would Be Needed for Real AI
-/// See `runDiffusion()` for detailed requirements. Summary:
-/// - 10,000+ font training dataset
-/// - Diffusion model architecture design
-/// - 2-4 weeks GPU training time
-/// - CoreML conversion and optimization
+/// When no model is loaded, it falls back to parametric stroke templates that
+/// produce recognizable letterforms with honest confidence=0.0.
 ///
 /// ## Confidence Values
-/// - 0.0: Template/algorithmic generation (honest - this is what we do)
-/// - 0.9: Would be used for real AI generation (unreachable currently)
+/// - 0.0: Template/algorithmic generation (fallback)
+/// - 0.9: Real AI model generation
 ///
 /// ## Thread Safety
 /// This class conforms to `@unchecked Sendable` because:
@@ -196,17 +187,34 @@ final class GlyphGenerator: @unchecked Sendable {
         }
     }
 
-    // MARK: - Model Inference Constants
+    // MARK: - Diffusion Model Constants
 
-    /// Parameters for model-based generation
-    private enum ModelParams {
-        /// Size of the output image from the diffusion model
-        static let outputImageSize: Int = 256
+    /// Parameters for the UNet diffusion model
+    private enum DiffusionParams {
+        /// Image size for UNet input/output (must match Python training)
+        static let imageSize: Int = 64
+        /// Style embedding dimension (must match StyleEncoder output)
+        static let styleEmbedDim: Int = 128
+        /// Number of supported characters (a-z + A-Z + 0-9)
+        static let numCharacters: Int = 62
+        /// Null class index for classifier-free guidance (one past valid classes)
+        static let nullClassIndex: Int32 = 62
         /// Threshold for binarizing model output (0-255 scale)
         static let binaryThreshold: UInt8 = 128
         /// Minimum contour length in pixels
         static let minContourLength: Int = 10
     }
+
+    /// Character-to-index mapping matching Python's `config.py` ordering:
+    /// `abcdefghijklmnopqrstuvwxyz` + `ABCDEFGHIJKLMNOPQRSTUVWXYZ` + `0123456789` → 0-61
+    static let charToIndex: [Character: Int32] = {
+        let chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+        var map = [Character: Int32]()
+        for (i, c) in chars.enumerated() {
+            map[c] = Int32(i)
+        }
+        return map
+    }()
 
     // MARK: - Public API
 
@@ -312,8 +320,8 @@ final class GlyphGenerator: @unchecked Sendable {
 
     // MARK: - Model-Based Generation
 
-    /// Generate a glyph using the CoreML diffusion model
-    /// Falls back to template generation if model is unavailable or fails
+    /// Generate a glyph using the CoreML diffusion model.
+    /// Falls back to template generation if model is unavailable or fails.
     internal func generateWithModel(
         character: Character,
         style: StyleEncoder.FontStyle,
@@ -334,24 +342,23 @@ final class GlyphGenerator: @unchecked Sendable {
         }
 
         do {
-            // Prepare model input
-            let inputFeatures = try prepareModelInput(
+            // Get style embedding (use from FontStyle or default)
+            let styleEmbedding = style.embedding.isEmpty ?
+                [Float](repeating: 0, count: DiffusionParams.styleEmbedDim) : style.embedding
+
+            // Run diffusion sampling loop
+            let outputImage = try await runDiffusionSampling(
+                model: diffusionModel,
                 character: character,
-                style: style,
-                seed: settings.seed
+                styleEmbedding: styleEmbedding,
+                settings: settings
             )
 
-            // Run inference
-            let output = try await runModelInference(
-                model: diffusionModel,
-                input: inputFeatures,
-                steps: settings.steps,
-                guidanceScale: settings.guidanceScale
-            )
+            recordAI()
 
             // Post-process: convert model output to glyph outline
             let outline = try postProcessModelOutput(
-                output: output,
+                output: outputImage,
                 metrics: metrics
             )
 
@@ -376,7 +383,7 @@ final class GlyphGenerator: @unchecked Sendable {
         } catch {
             // Model inference failed - fall back to template generation
             recordFailed()
-            print("[GlyphGenerator] Model inference failed: \(error.localizedDescription), falling back to template")
+            Self.logger.warning("Model inference failed: \(error.localizedDescription), falling back to template")
             return try await generatePlaceholder(
                 character: character,
                 mode: .fromScratch(style: style),
@@ -385,70 +392,200 @@ final class GlyphGenerator: @unchecked Sendable {
         }
     }
 
-    // MARK: - Model Input Preparation
+    // MARK: - Diffusion Sampling
 
-    /// Prepare input features for the diffusion model
-    private func prepareModelInput(
+    /// Run the full flow-matching diffusion sampling loop.
+    ///
+    /// This is the core AI generation path. It:
+    /// 1. Starts with Gaussian noise
+    /// 2. Iterates through Euler steps, calling the UNet at each timestep
+    /// 3. Optionally applies classifier-free guidance
+    /// 4. Converts the final sample to a grayscale CGImage
+    ///
+    /// - Parameters:
+    ///   - model: The compiled GlyphDiffusion CoreML model.
+    ///   - character: The character to generate.
+    ///   - styleEmbedding: 128-dim style vector from StyleEncoder.
+    ///   - settings: Generation settings (steps, guidance scale, seed).
+    ///   - mask: Optional mask for partial completion (nil = zeros = from scratch).
+    /// - Returns: A 64x64 grayscale CGImage of the generated glyph.
+    private func runDiffusionSampling(
+        model: MLModel,
         character: Character,
-        style: StyleEncoder.FontStyle,
-        seed: UInt64?
-    ) throws -> MLFeatureProvider {
-        // Create character embedding (one-hot or learned)
-        let charEmbedding = createCharacterEmbedding(character)
+        styleEmbedding: [Float],
+        settings: GenerationSettings,
+        mask: [Float]? = nil
+    ) async throws -> CGImage {
+        let size = DiffusionParams.imageSize
+        let pixelCount = size * size
 
-        // Use style embedding or default
-        let styleEmbedding = style.embedding.isEmpty ?
-            createDefaultStyleEmbedding() : style.embedding
+        // Look up character index
+        let charIndex = Self.charToIndex[character] ?? DiffusionParams.nullClassIndex
 
-        // Create random seed for generation
-        let actualSeed = seed ?? UInt64.random(in: 0..<UInt64.max)
+        // Create scheduler
+        let scheduler = FlowMatchingScheduler(numSteps: settings.steps)
 
-        // Create MLMultiArray for embeddings
-        let charArray = try MLMultiArray(shape: [128], dataType: .float32)
-        for (i, value) in charEmbedding.enumerated() {
-            charArray[i] = NSNumber(value: value)
+        // Seed the RNG
+        var rng: RandomNumberGenerator = settings.seed.map { SeededRNG(seed: $0) } as RandomNumberGenerator? ?? SystemRandomNumberGenerator() as RandomNumberGenerator
+
+        // Generate initial Gaussian noise
+        var sample = generateGaussianNoise(count: pixelCount, using: &rng)
+
+        // Prepare fixed inputs
+        let styleArray = try floatArrayToMLMultiArray(styleEmbedding, shape: [1, NSNumber(value: DiffusionParams.styleEmbedDim)])
+        let maskArray = try floatArrayToMLMultiArray(
+            mask ?? [Float](repeating: 0, count: pixelCount),
+            shape: [1, 1, NSNumber(value: size), NSNumber(value: size)]
+        )
+
+        // Sampling loop
+        for stepIndex in 0..<settings.steps {
+            try Task.checkCancellation()
+
+            let t = scheduler.timesteps[stepIndex]
+
+            // Prepare UNet inputs for this step
+            let velocity = try await callUNet(
+                model: model,
+                sample: sample,
+                timestep: t,
+                charIndex: charIndex,
+                styleEmbed: styleArray,
+                mask: maskArray
+            )
+
+            // Classifier-free guidance
+            var finalVelocity = velocity
+            if settings.guidanceScale > 1.0 {
+                let uncondVelocity = try await callUNet(
+                    model: model,
+                    sample: sample,
+                    timestep: t,
+                    charIndex: DiffusionParams.nullClassIndex,
+                    styleEmbed: styleArray,
+                    mask: maskArray
+                )
+                // guided = uncond + scale * (cond - uncond)
+                for i in 0..<pixelCount {
+                    finalVelocity[i] = uncondVelocity[i] + settings.guidanceScale * (velocity[i] - uncondVelocity[i])
+                }
+            }
+
+            // Euler step
+            let stepResult = scheduler.step(velocity: finalVelocity, stepIndex: stepIndex, sample: sample)
+            sample = stepResult.prevSample
         }
 
-        let styleArray = try MLMultiArray(shape: [128], dataType: .float32)
-        for i in 0..<min(styleEmbedding.count, 128) {
-            styleArray[i] = NSNumber(value: styleEmbedding[i])
-        }
-
-        let seedArray = try MLMultiArray(shape: [1], dataType: .float32)
-        seedArray[0] = NSNumber(value: Float(Double(actualSeed) / Double(UInt64.max)))
-
-        // Use MLDictionaryFeatureProvider since actual model types aren't available until models are compiled
-        return try MLDictionaryFeatureProvider(dictionary: [
-            "characterEmbedding": MLFeatureValue(multiArray: charArray),
-            "styleEmbedding": MLFeatureValue(multiArray: styleArray),
-            "seed": MLFeatureValue(multiArray: seedArray)
-        ])
+        // Convert final sample [-1, 1] → grayscale CGImage [0, 255]
+        return try sampleToGrayscaleImage(sample, width: size, height: size)
     }
 
-    /// Run diffusion model inference
-    private func runModelInference(
+    /// Call the UNet CoreML model for a single forward pass.
+    private func callUNet(
         model: MLModel,
-        input: MLFeatureProvider,
-        steps: Int,
-        guidanceScale: Float
-    ) async throws -> CGImage {
-        // Run prediction - model.prediction is async in Swift 6
+        sample: [Float],
+        timestep: Float,
+        charIndex: Int32,
+        styleEmbed: MLMultiArray,
+        mask: MLMultiArray
+    ) async throws -> [Float] {
+        let size = DiffusionParams.imageSize
+
+        let xArray = try floatArrayToMLMultiArray(sample, shape: [1, 1, NSNumber(value: size), NSNumber(value: size)])
+        let tArray = try MLMultiArray(shape: [1], dataType: .float32)
+        tArray[0] = NSNumber(value: timestep)
+        let charArray = try MLMultiArray(shape: [1], dataType: .int32)
+        charArray[0] = NSNumber(value: charIndex)
+
+        let input = try MLDictionaryFeatureProvider(dictionary: [
+            "x": MLFeatureValue(multiArray: xArray),
+            "timesteps": MLFeatureValue(multiArray: tArray),
+            "char_indices": MLFeatureValue(multiArray: charArray),
+            "style_embed": MLFeatureValue(multiArray: styleEmbed),
+            "mask": MLFeatureValue(multiArray: mask),
+        ])
+
         let prediction = try await model.prediction(from: input)
 
-        // Extract output image from prediction
-        guard let outputFeature = prediction.featureValue(for: "outputImage"),
-              let pixelBuffer = outputFeature.imageBufferValue else {
-            throw GeneratorError.generationFailed("Model did not produce valid image output")
+        // Extract velocity output
+        guard let velocityFeature = prediction.featureValue(for: "velocity"),
+              let velocityArray = velocityFeature.multiArrayValue else {
+            throw GeneratorError.generationFailed("UNet did not produce velocity output")
         }
 
-        // Convert CVPixelBuffer to CGImage
-        let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-        let context = CIContext()
-        guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else {
-            throw GeneratorError.generationFailed("Failed to convert model output to image")
+        return mlMultiArrayToFloatArray(velocityArray)
+    }
+
+    // MARK: - Array / MLMultiArray Conversion Helpers
+
+    /// Convert a flat Float array to an MLMultiArray with the given shape.
+    private func floatArrayToMLMultiArray(_ array: [Float], shape: [NSNumber]) throws -> MLMultiArray {
+        let mlArray = try MLMultiArray(shape: shape, dataType: .float32)
+        let ptr = mlArray.dataPointer.bindMemory(to: Float.self, capacity: array.count)
+        for i in 0..<array.count {
+            ptr[i] = array[i]
+        }
+        return mlArray
+    }
+
+    /// Convert an MLMultiArray to a flat Float array.
+    private func mlMultiArrayToFloatArray(_ mlArray: MLMultiArray) -> [Float] {
+        let count = mlArray.count
+        let ptr = mlArray.dataPointer.bindMemory(to: Float.self, capacity: count)
+        return Array(UnsafeBufferPointer(start: ptr, count: count))
+    }
+
+    // MARK: - Noise Generation
+
+    /// Generate Gaussian noise using Box-Muller transform.
+    private func generateGaussianNoise(count: Int, using rng: inout RandomNumberGenerator) -> [Float] {
+        var noise = [Float](repeating: 0, count: count)
+        // Box-Muller: generate pairs
+        let pairCount = (count + 1) / 2
+        for i in 0..<pairCount {
+            let u1 = max(Float.random(in: 0..<1, using: &rng), Float.leastNormalMagnitude)
+            let u2 = Float.random(in: 0..<1, using: &rng)
+            let mag = (-2.0 * log(u1)).squareRoot()
+            let angle = 2.0 * Float.pi * u2
+            noise[i * 2] = mag * cos(angle)
+            if i * 2 + 1 < count {
+                noise[i * 2 + 1] = mag * sin(angle)
+            }
+        }
+        return noise
+    }
+
+    // MARK: - Image Conversion
+
+    /// Convert a diffusion sample in [-1, 1] range to a grayscale CGImage.
+    /// Denormalization: pixel = clamp((x + 1) * 127.5, 0, 255)
+    private func sampleToGrayscaleImage(_ sample: [Float], width: Int, height: Int) throws -> CGImage {
+        precondition(sample.count == width * height)
+
+        var pixels = [UInt8](repeating: 0, count: width * height)
+        for i in 0..<sample.count {
+            let value = (sample[i] + 1.0) * 127.5
+            pixels[i] = UInt8(min(max(value, 0), 255))
         }
 
-        return cgImage
+        guard let provider = CGDataProvider(data: Data(pixels) as CFData),
+              let image = CGImage(
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bitsPerPixel: 8,
+                bytesPerRow: width,
+                space: CGColorSpaceCreateDeviceGray(),
+                bitmapInfo: CGBitmapInfo(rawValue: 0),
+                provider: provider,
+                decode: nil,
+                shouldInterpolate: false,
+                intent: .defaultIntent
+              ) else {
+            throw GeneratorError.generationFailed("Failed to create CGImage from diffusion output")
+        }
+
+        return image
     }
 
     // MARK: - Post-Processing Pipeline
@@ -463,12 +600,12 @@ final class GlyphGenerator: @unchecked Sendable {
         let pixelData = try ImageProcessor.getPixelData(output)
 
         // Step 2: Apply threshold to create binary image
-        let binaryData = pixelData.toBinary(threshold: ModelParams.binaryThreshold)
+        let binaryData = pixelData.toBinary(threshold: DiffusionParams.binaryThreshold)
 
         // Step 3: Trace contours using existing ContourTracer
         let tracingSettings = ContourTracer.TracingSettings(
             simplificationTolerance: 2.0,
-            minContourLength: ModelParams.minContourLength,
+            minContourLength: DiffusionParams.minContourLength,
             detectCorners: true,
             cornerAngleThreshold: 60,
             smoothCurves: true
@@ -617,56 +754,65 @@ final class GlyphGenerator: @unchecked Sendable {
         conditioning: Conditioning,
         settings: GenerationSettings
     ) async throws -> GlyphOutline {
-        // ============================================================================
-        // REAL AI IMPLEMENTATION REQUIREMENTS
-        // ============================================================================
-        //
-        // To implement actual diffusion-based glyph generation, you need:
-        //
-        // 1. TRAINING DATA (~6 months of work)
-        //    - 10,000+ fonts with consistent glyph labeling
-        //    - Normalized outlines (all scaled to same units-per-em)
-        //    - Style annotations (weight, contrast, serif style, x-height ratio, etc.)
-        //    - Character class labels
-        //
-        // 2. MODEL ARCHITECTURE
-        //    - Diffusion model conditioned on character class and style embedding
-        //    - Input: noise + conditioning (character one-hot + style vector)
-        //    - Output: sequence of control points forming glyph outline
-        //    - Recommended: DDPM or flow-matching for cleaner outlines
-        //
-        // 3. TRAINING INFRASTRUCTURE
-        //    - GPU cluster (8+ A100s for reasonable training time)
-        //    - 2-4 weeks of training
-        //    - PyTorch + custom training loop
-        //
-        // 4. COREML CONVERSION
-        //    - Export trained model to ONNX
-        //    - Convert ONNX → CoreML using coremltools
-        //    - Optimize for Apple Neural Engine
-        //
-        // 5. INFERENCE PIPELINE (what this function would do)
-        //    - Load CoreML model via ModelManager
-        //    - Prepare input tensor from conditioning
-        //    - Run denoising loop (settings.steps iterations)
-        //    - Decode output points to GlyphOutline
-        //
-        // This is a multi-month ML research project requiring:
-        //    - ML engineering expertise
-        //    - Access to font datasets (Google Fonts, Adobe Fonts)
-        //    - Significant compute resources
-        //
-        // For now, this path is unreachable (model never loads), and generation
-        // falls back to the honest template-based system in generatePlaceholder().
-        // ============================================================================
-
-        // This code would run if a model was loaded - but no model exists
-        guard let base = conditioning.baseOutline else {
-            // Would run diffusion here if model existed
+        // Get the model (caller already verified it exists)
+        let model = await MainActor.run { ModelManager.shared.glyphDiffusion }
+        guard let diffusionModel = model else {
             throw GeneratorError.modelNotLoaded
         }
 
-        return base
+        // Build mask from base outline if doing partial completion
+        let mask: [Float]?
+        if let baseOutline = conditioning.baseOutline {
+            mask = rasterizeOutlineToMask(baseOutline, size: DiffusionParams.imageSize)
+        } else {
+            mask = nil
+        }
+
+        // Determine character from embedding (find most prominent index)
+        // This is a fallback — the main generate() path uses generateWithModel() instead
+        let charIndex: Int32 = DiffusionParams.nullClassIndex
+
+        // Run diffusion sampling
+        let outputImage = try await runDiffusionSampling(
+            model: diffusionModel,
+            character: Character(UnicodeScalar(Int(charIndex) < 26 ? Int(charIndex) + 97 : 65)!),
+            styleEmbedding: conditioning.styleEmbedding,
+            settings: settings,
+            mask: mask
+        )
+
+        recordAI()
+
+        // Post-process to outline
+        return try postProcessModelOutput(
+            output: outputImage,
+            metrics: conditioning.targetMetrics
+        )
+    }
+
+    /// Rasterize a GlyphOutline to a binary mask for partial completion conditioning.
+    /// Returns a flat array of size*size floats where 1.0 = glyph, 0.0 = background.
+    private func rasterizeOutlineToMask(_ outline: GlyphOutline, size: Int) -> [Float] {
+        // Simple bounding-box based rasterization
+        let bounds = outline.boundingBox
+        guard bounds.width > 0, bounds.height > 0 else {
+            return [Float](repeating: 0, count: size * size)
+        }
+
+        var mask = [Float](repeating: 0, count: size * size)
+        let scale = Float(size) / Float(max(bounds.width, bounds.height))
+
+        for contour in outline.contours {
+            for point in contour.points {
+                let px = Int(Float(point.position.x - CGFloat(bounds.minX)) * scale)
+                let py = Int(Float(CGFloat(bounds.maxY) - point.position.y) * scale)
+                if px >= 0 && px < size && py >= 0 && py < size {
+                    mask[py * size + px] = 1.0
+                }
+            }
+        }
+
+        return mask
     }
 
     private func generatePlaceholder(
@@ -981,5 +1127,42 @@ final class GlyphGenerator: @unchecked Sendable {
         }
 
         return zip(a, b).map { $0 * (1 - t) + $1 * t }
+    }
+}
+
+// MARK: - Seeded Random Number Generator
+
+/// Deterministic RNG for reproducible diffusion sampling.
+/// Uses a simple xoshiro256** algorithm seeded from the user-provided seed.
+private struct SeededRNG: RandomNumberGenerator {
+    private var state: (UInt64, UInt64, UInt64, UInt64)
+
+    init(seed: UInt64) {
+        // SplitMix64 to expand seed into state
+        var s = seed
+        func next() -> UInt64 {
+            s &+= 0x9e3779b97f4a7c15
+            var z = s
+            z = (z ^ (z >> 30)) &* 0xbf58476d1ce4e5b9
+            z = (z ^ (z >> 27)) &* 0x94d049bb133111eb
+            return z ^ (z >> 31)
+        }
+        state = (next(), next(), next(), next())
+    }
+
+    mutating func next() -> UInt64 {
+        let result = rotl(state.1 &* 5, 7) &* 9
+        let t = state.1 << 17
+        state.2 ^= state.0
+        state.3 ^= state.1
+        state.1 ^= state.2
+        state.0 ^= state.3
+        state.2 ^= t
+        state.3 = rotl(state.3, 45)
+        return result
+    }
+
+    private func rotl(_ x: UInt64, _ k: Int) -> UInt64 {
+        (x << k) | (x >> (64 - k))
     }
 }

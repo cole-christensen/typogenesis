@@ -765,6 +765,7 @@ def convert_to_coreml(output_dir: Path) -> None:
             mlmodel = ct.convert(
                 traced,
                 inputs=[ct.TensorType(name="image", shape=(1, 1, 64, 64))],
+                outputs=[ct.TensorType(name="embedding")],
                 minimum_deployment_target=ct.target.macOS14,
             )
             mlmodel.save(str(coreml_dir / "StyleEncoder.mlpackage"))
@@ -795,12 +796,89 @@ def convert_to_coreml(output_dir: Path) -> None:
                     ct.TensorType(name="left_glyph", shape=(1, 1, 64, 64)),
                     ct.TensorType(name="right_glyph", shape=(1, 1, 64, 64)),
                 ],
+                outputs=[ct.TensorType(name="kerning")],
                 minimum_deployment_target=ct.target.macOS14,
             )
             mlmodel.save(str(coreml_dir / "KerningNet.mlpackage"))
             logger.info("  Saved KerningNet.mlpackage")
         except (RuntimeError, Exception) as e:
             logger.warning(f"  KerningNet conversion failed: {e}")
+            logger.warning("  (coremltools may require Python 3.11-3.12)")
+
+    # ── GlyphDiffusion UNet ──
+    gd_ckpt = output_dir / "glyph_diffusion.pt"
+    if gd_ckpt.exists():
+        logger.info("Converting GlyphDiffusion UNet to CoreML...")
+        try:
+            from models.glyph_diffusion.config import ModelConfig
+            from models.glyph_diffusion.model import GlyphDiffusionModel
+
+            config = ModelConfig()
+            model = GlyphDiffusionModel(config)
+            state = torch.load(gd_ckpt, map_location="cpu", weights_only=True)
+            model.load_state_dict(state["model_state_dict"])
+            model.eval()
+
+            # Replace einops.rearrange in AttentionBlock with trace-friendly ops
+            for module in model.modules():
+                if hasattr(module, "attention") and hasattr(module, "norm"):
+                    # Monkey-patch AttentionBlock.forward for tracing
+                    import types
+
+                    def _trace_friendly_forward(self, x: torch.Tensor) -> torch.Tensor:
+                        batch, channels, height, width = x.shape
+                        h = self.norm(x)
+                        h = h.permute(0, 2, 3, 1).reshape(batch, height * width, channels)
+                        h, _ = self.attention(h, h, h)
+                        h = h.reshape(batch, height, width, channels).permute(0, 3, 1, 2)
+                        return x + h
+
+                    module.forward = types.MethodType(_trace_friendly_forward, module)
+
+            # Wrapper to make mask non-optional (required for export)
+            class UNetExportWrapper(torch.nn.Module):
+                def __init__(self, model):
+                    super().__init__()
+                    self.model = model
+
+                def forward(self, x, timesteps, char_indices, style_embed, mask):
+                    return self.model(x, timesteps, char_indices, style_embed, mask)
+
+            wrapper = UNetExportWrapper(model)
+            wrapper.eval()
+
+            # Create dummy inputs (char_indices as int32 for CoreML)
+            dummy_x = torch.randn(1, 1, 64, 64)
+            dummy_t = torch.tensor([0.5])
+            dummy_char = torch.tensor([0], dtype=torch.int32)
+            dummy_style = torch.randn(1, 128)
+            dummy_mask = torch.zeros(1, 1, 64, 64)
+
+            # Use torch.export (torch.jit.trace has issues with coremltools 9+)
+            from torch.export import export as torch_export
+
+            exported = torch_export(
+                wrapper,
+                (dummy_x, dummy_t, dummy_char, dummy_style, dummy_mask),
+            )
+            exported = exported.run_decompositions({})
+
+            mlmodel = ct.convert(
+                exported,
+                inputs=[
+                    ct.TensorType(name="x", shape=(1, 1, 64, 64)),
+                    ct.TensorType(name="timesteps", shape=(1,)),
+                    ct.TensorType(name="char_indices", shape=(1,), dtype=np.int32),
+                    ct.TensorType(name="style_embed", shape=(1, 128)),
+                    ct.TensorType(name="mask", shape=(1, 1, 64, 64)),
+                ],
+                outputs=[ct.TensorType(name="velocity")],
+                minimum_deployment_target=ct.target.macOS14,
+            )
+            mlmodel.save(str(coreml_dir / "GlyphDiffusion.mlpackage"))
+            logger.info("  Saved GlyphDiffusion.mlpackage")
+        except (RuntimeError, Exception) as e:
+            logger.warning(f"  GlyphDiffusion conversion failed: {e}")
             logger.warning("  (coremltools may require Python 3.11-3.12)")
 
     logger.info(f"CoreML models saved to {coreml_dir}")
