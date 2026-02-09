@@ -463,7 +463,9 @@ class SupConLoss(nn.Module):
 
         # Mean log-probability over positive pairs
         # Handle samples with no positives (set loss to 0)
-        loss = -(pos_mask * log_prob).sum(dim=1) / pos_count.clamp(min=1)
+        # Use where() instead of multiplication to avoid 0 * -inf = NaN
+        masked_log_prob = torch.where(pos_mask, log_prob, torch.zeros_like(log_prob))
+        loss = -masked_log_prob.sum(dim=1) / pos_count.clamp(min=1)
 
         # Scale by temperature ratio
         loss = loss * (self.temperature / self.base_temperature)

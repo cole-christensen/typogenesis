@@ -38,12 +38,10 @@ final class KerningPredictor: Sendable {
 
     /// Parameters for glyph pair rendering
     private enum RenderParams {
-        /// Output image size in pixels
-        static let imageSize: Int = 128
+        /// Output image size in pixels (must match CoreML KerningNet input: 1x1x64x64)
+        static let imageSize: Int = 64
         /// Scale factor for glyph rendering
         static let scaleFactor: CGFloat = 0.8
-        /// Baseline position as percentage of image height (70%)
-        static let baselineRatio: CGFloat = 0.7
     }
 
     /// Parameters for CoreML model inference
@@ -253,7 +251,10 @@ final class KerningPredictor: Sendable {
         return pairs
     }
 
-    /// Predict kerning for a single pair using the CoreML model
+    /// Predict kerning for a single pair using the CoreML model.
+    ///
+    /// The KerningNet model takes two separate 64x64 grayscale glyph images
+    /// (`left_glyph` and `right_glyph`) and outputs a single kerning value.
     private func predictPairWithModel(
         left: Character,
         right: Character,
@@ -264,12 +265,14 @@ final class KerningPredictor: Sendable {
             return nil
         }
 
-        // Render pair to image for model input
-        guard let pairImage = renderPair(
-            leftGlyph: leftGlyph,
-            rightGlyph: rightGlyph,
-            metrics: project.metrics,
-            spacing: 0
+        // Render each glyph individually for the model (not as a pair)
+        guard let leftImage = renderSingleGlyph(
+            glyph: leftGlyph,
+            metrics: project.metrics
+        ),
+        let rightImage = renderSingleGlyph(
+            glyph: rightGlyph,
+            metrics: project.metrics
         ) else {
             return nil
         }
@@ -288,18 +291,23 @@ final class KerningPredictor: Sendable {
         }
 
         do {
-            // Create model input using MLDictionaryFeatureProvider (model-generated types unavailable until models compiled)
-            let pixelBuffer = try createPixelBuffer(from: pairImage)
+            // Create separate pixel buffers for left and right glyphs
+            let leftBuffer = try createPixelBuffer(from: leftImage)
+            let rightBuffer = try createPixelBuffer(from: rightImage)
             let input = try MLDictionaryFeatureProvider(dictionary: [
-                "image": MLFeatureValue(pixelBuffer: pixelBuffer)
+                "left_glyph": MLFeatureValue(pixelBuffer: leftBuffer),
+                "right_glyph": MLFeatureValue(pixelBuffer: rightBuffer),
             ])
 
-            // Run inference - model.prediction is async in Swift 6
+            // Run inference
             let prediction = try await kerningModel.prediction(from: input)
 
-            // Extract kerning value from output
-            guard let outputFeature = prediction.featureValue(for: "kerning"),
-                  let kerningArray = outputFeature.multiArrayValue else {
+            // Extract kerning value (try canonical name, fall back to legacy auto-generated name)
+            // "kerning" is the canonical output name set during CoreML conversion.
+            // "var_168" is the auto-generated name from older conversions without explicit naming.
+            let outputFeature = prediction.featureValue(for: "kerning")
+                ?? prediction.featureValue(for: "var_168")
+            guard let kerningArray = outputFeature?.multiArrayValue else {
                 throw PredictorError.predictionFailed("Model did not produce valid output")
             }
 
@@ -318,6 +326,68 @@ final class KerningPredictor: Sendable {
                 settings: .default
             )
         }
+    }
+
+    /// Render a single glyph to a 64x64 grayscale image for model input.
+    ///
+    /// Uses `glyph.outline.cgPath` to correctly render bezier curves (not just line segments).
+    /// Scales relative to `metrics.unitsPerEm` for consistent sizing across fonts.
+    private func renderSingleGlyph(
+        glyph: Glyph,
+        metrics: FontMetrics
+    ) -> CGImage? {
+        let size = RenderParams.imageSize
+        let scale = RenderParams.scaleFactor
+
+        guard let context = CGContext(
+            data: nil,
+            width: size,
+            height: size,
+            bitsPerComponent: 8,
+            bytesPerRow: size,
+            space: CGColorSpaceCreateDeviceGray(),
+            bitmapInfo: 0
+        ) else {
+            return nil
+        }
+
+        // White background
+        context.setFillColor(gray: 1.0, alpha: 1.0)
+        context.fill(CGRect(x: 0, y: 0, width: size, height: size))
+
+        let bounds = glyph.outline.boundingBox
+        guard bounds.width > 0, bounds.height > 0 else { return context.makeImage() }
+
+        // Use unitsPerEm as reference size for consistent scaling across fonts.
+        // This ensures glyphs are sized relative to the em square, not their own bbox.
+        let safeUnitsPerEm = max(CGFloat(metrics.unitsPerEm), 1)
+        let glyphScale = CGFloat(size) / safeUnitsPerEm * scale
+
+        // Center the glyph within the image. Flip Y since glyph coordinates are
+        // Y-up (typographic) but CGContext bitmap coordinates are Y-down.
+        let scaledWidth = CGFloat(bounds.width) * glyphScale
+        let scaledHeight = CGFloat(bounds.height) * glyphScale
+        let offsetX = (CGFloat(size) - scaledWidth) / 2.0 - CGFloat(bounds.minX) * glyphScale
+        // Y-flip: translate to bottom and negate the scale
+        let offsetY = (CGFloat(size) + scaledHeight) / 2.0 + CGFloat(bounds.minY) * glyphScale
+
+        // Build transform: translate then scale with Y-flip
+        var transform = CGAffineTransform.identity
+        transform = transform.translatedBy(x: offsetX, y: offsetY)
+        transform = transform.scaledBy(x: glyphScale, y: -glyphScale)
+
+        // Get the full CGPath (handles bezier curves, not just line segments)
+        let glyphPath = glyph.outline.cgPath
+        guard let scaledPath = glyphPath.copy(using: &transform) else {
+            return context.makeImage()
+        }
+
+        // Draw the properly transformed glyph
+        context.setFillColor(gray: 0.0, alpha: 1.0)
+        context.addPath(scaledPath)
+        context.fillPath()
+
+        return context.makeImage()
     }
 
     /// Predict kerning for multiple pairs in batch (more efficient)
@@ -373,36 +443,42 @@ final class KerningPredictor: Sendable {
             let batchEnd = min(batchStart + ModelInferenceParams.batchSize, pairs.count)
             let batch = Array(pairs[batchStart..<batchEnd])
 
-            // Render all pairs in batch
-            var batchInputs: [(Character, Character, CGImage)] = []
+            // Render individual glyphs in batch
+            var batchInputs: [(Character, Character, CGImage, CGImage)] = []
             for (left, right) in batch {
                 guard let leftGlyph = project.glyphs[left],
                       let rightGlyph = project.glyphs[right],
-                      let pairImage = renderPair(
-                          leftGlyph: leftGlyph,
-                          rightGlyph: rightGlyph,
-                          metrics: project.metrics,
-                          spacing: 0
+                      let leftImage = renderSingleGlyph(
+                          glyph: leftGlyph,
+                          metrics: project.metrics
+                      ),
+                      let rightImage = renderSingleGlyph(
+                          glyph: rightGlyph,
+                          metrics: project.metrics
                       ) else {
                     continue
                 }
-                batchInputs.append((left, right, pairImage))
+                batchInputs.append((left, right, leftImage, rightImage))
             }
 
             // Run inference on batch
-            for (left, right, pairImage) in batchInputs {
+            for (left, right, leftImage, rightImage) in batchInputs {
                 do {
-                    // Create model input using MLDictionaryFeatureProvider (model-generated types unavailable until models compiled)
-                    let pixelBuffer = try createPixelBuffer(from: pairImage)
+                    let leftBuffer = try createPixelBuffer(from: leftImage)
+                    let rightBuffer = try createPixelBuffer(from: rightImage)
                     let input = try MLDictionaryFeatureProvider(dictionary: [
-                        "image": MLFeatureValue(pixelBuffer: pixelBuffer)
+                        "left_glyph": MLFeatureValue(pixelBuffer: leftBuffer),
+                        "right_glyph": MLFeatureValue(pixelBuffer: rightBuffer),
                     ])
 
-                    // Run inference - model.prediction is async in Swift 6
                     let prediction = try await model.prediction(from: input)
 
-                    guard let outputFeature = prediction.featureValue(for: "kerning"),
-                          let kerningArray = outputFeature.multiArrayValue else {
+                    // Try canonical name, fall back to legacy auto-generated name
+                    // "kerning" is the canonical output name set during CoreML conversion.
+                    // "var_168" is the auto-generated name from older conversions without explicit naming.
+                    let outputFeature = prediction.featureValue(for: "kerning")
+                        ?? prediction.featureValue(for: "var_168")
+                    guard let kerningArray = outputFeature?.multiArrayValue else {
                         continue
                     }
 
@@ -446,7 +522,8 @@ final class KerningPredictor: Sendable {
         return results
     }
 
-    /// Create CVPixelBuffer from CGImage for model input
+    /// Create single-channel grayscale CVPixelBuffer from CGImage for model input.
+    /// The KerningNet model expects (1, 1, 64, 64) grayscale input.
     private func createPixelBuffer(from image: CGImage) throws -> CVPixelBuffer {
         let size = RenderParams.imageSize
 
@@ -460,7 +537,7 @@ final class KerningPredictor: Sendable {
             kCFAllocatorDefault,
             size,
             size,
-            kCVPixelFormatType_32BGRA,
+            kCVPixelFormatType_OneComponent8,
             attrs as CFDictionary,
             &pixelBuffer
         )
@@ -478,13 +555,13 @@ final class KerningPredictor: Sendable {
             height: size,
             bitsPerComponent: 8,
             bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+            space: CGColorSpaceCreateDeviceGray(),
+            bitmapInfo: 0
         ) else {
             throw PredictorError.predictionFailed("Failed to create graphics context")
         }
 
-        // Draw image scaled to target size
+        // Draw grayscale image into the single-channel buffer
         context.interpolationQuality = .high
         context.draw(image, in: CGRect(x: 0, y: 0, width: size, height: size))
 
@@ -679,52 +756,5 @@ final class KerningPredictor: Sendable {
         }
 
         return minGap.isInfinite ? CGFloat(leftGlyph.advanceWidth) : minGap
-    }
-
-    private func renderPair(
-        leftGlyph: Glyph,
-        rightGlyph: Glyph,
-        metrics: FontMetrics,
-        spacing: Int
-    ) -> CGImage? {
-        let size = RenderParams.imageSize
-        // Guard against division by zero
-        let safeUnitsPerEm = max(CGFloat(metrics.unitsPerEm), 1)
-        let scale = CGFloat(size) / safeUnitsPerEm * RenderParams.scaleFactor
-
-        guard let context = CGContext(
-            data: nil,
-            width: size,
-            height: size,
-            bitsPerComponent: 8,
-            bytesPerRow: size * 4,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else {
-            return nil
-        }
-
-        // White background
-        context.setFillColor(CGColor.white)
-        context.fill(CGRect(x: 0, y: 0, width: size, height: size))
-
-        // Set up transform
-        let baseline = CGFloat(size) * RenderParams.baselineRatio
-        context.translateBy(x: 10, y: baseline)
-        context.scaleBy(x: scale, y: -scale)
-
-        // Draw left glyph
-        context.setFillColor(CGColor.black)
-        context.addPath(leftGlyph.outline.cgPath)
-        context.fillPath()
-
-        // Move to right glyph position
-        context.translateBy(x: CGFloat(leftGlyph.advanceWidth + spacing), y: 0)
-
-        // Draw right glyph
-        context.addPath(rightGlyph.outline.cgPath)
-        context.fillPath()
-
-        return context.makeImage()
     }
 }
