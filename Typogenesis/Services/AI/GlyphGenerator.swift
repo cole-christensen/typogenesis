@@ -20,17 +20,18 @@ import os.log
 /// - 0.9: Real AI model generation
 ///
 /// ## Thread Safety
-/// This class conforms to `@unchecked Sendable` because:
-/// - `styleEncoder` and `strokeBuilder` are set at init and read-only thereafter (no mutation after init)
-/// - `templateLibrary` is a shared singleton with its own thread safety
-/// - `_generationStats` is protected by `statsLock` (NSLock)
-final class GlyphGenerator: @unchecked Sendable {
+/// Actor isolation provides automatic thread safety for all mutable state.
+/// `styleEncoder`, `templateLibrary`, and `strokeBuilder` are immutable after init.
+actor GlyphGenerator {
 
     enum GeneratorError: Error, LocalizedError {
         case modelNotLoaded
         case generationFailed(String)
         case invalidStyle
         case cancelled
+        case shapeMismatch(got: Int, expected: Int, shape: [NSNumber])
+        case invalidDataType(expected: String, got: String)
+        case outputSizeMismatch(got: Int, expected: Int)
 
         var errorDescription: String? {
             switch self {
@@ -42,6 +43,12 @@ final class GlyphGenerator: @unchecked Sendable {
                 return "Invalid style configuration"
             case .cancelled:
                 return "Generation was cancelled"
+            case .shapeMismatch(let got, let expected, let shape):
+                return "Array count \(got) doesn't match shape \(shape) (expected \(expected))"
+            case .invalidDataType(let expected, let got):
+                return "Expected \(expected) MLMultiArray, got \(got)"
+            case .outputSizeMismatch(let got, let expected):
+                return "UNet output size \(got) doesn't match expected \(expected)"
             }
         }
     }
@@ -125,41 +132,28 @@ final class GlyphGenerator: @unchecked Sendable {
     /// Logger for tracking generation method and fallback usage
     private static let logger = Logger(subsystem: "com.typogenesis", category: "GlyphGenerator")
 
-    /// Lock for thread-safe stats access
-    private let statsLock = NSLock()
-
-    /// Track statistics about generation method usage (access via recordStat/getStats for thread safety)
+    /// Track statistics about generation method usage (actor isolation provides thread safety)
     private var _generationStats = GenerationStats()
 
-    /// Thread-safe read access to generation stats
+    /// Read access to generation stats (protected by actor isolation)
     var generationStats: GenerationStats {
-        statsLock.lock()
-        defer { statsLock.unlock() }
-        return _generationStats
+        _generationStats
     }
 
-    /// Thread-safe stat recording
+    /// Record stat updates (protected by actor isolation)
     private func recordFallback() {
-        statsLock.lock()
-        defer { statsLock.unlock() }
         _generationStats.fallbackGenerations += 1
     }
 
     private func recordAI() {
-        statsLock.lock()
-        defer { statsLock.unlock() }
         _generationStats.aiGenerations += 1
     }
 
     private func recordTemplate() {
-        statsLock.lock()
-        defer { statsLock.unlock() }
         _generationStats.templateGenerations += 1
     }
 
     private func recordFailed() {
-        statsLock.lock()
-        defer { statsLock.unlock() }
         _generationStats.failedGenerations += 1
     }
 
@@ -207,7 +201,7 @@ final class GlyphGenerator: @unchecked Sendable {
 
     /// Character-to-index mapping matching Python's `config.py` ordering:
     /// `abcdefghijklmnopqrstuvwxyz` + `ABCDEFGHIJKLMNOPQRSTUVWXYZ` + `0123456789` → 0-61
-    static let charToIndex: [Character: Int32] = {
+    nonisolated static let charToIndex: [Character: Int32] = {
         let chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
         var map = [Character: Int32]()
         for (i, c) in chars.enumerated() {
@@ -253,10 +247,17 @@ final class GlyphGenerator: @unchecked Sendable {
         case .fromScratch(let s):
             style = s
         case .completePartial(_, let s):
+            // TODO: Implement inpainting using rasterizeOutlineToMask for partial completion conditioning.
+            // Currently falls through to from-scratch generation with the same style.
+            Self.logger.warning("completePartial mode not yet implemented for AI generation; falling through to from-scratch generation")
             style = s
         case .variation(_, _):
+            // TODO: Implement variation generation that uses the base glyph to condition the diffusion model.
+            Self.logger.warning("variation mode not yet implemented for AI generation; falling through to from-scratch generation")
             style = StyleEncoder.FontStyle.default
         case .interpolate(_, _, _):
+            // TODO: Implement interpolation that blends two glyph embeddings in the diffusion model.
+            Self.logger.warning("interpolate mode not yet implemented for AI generation; falling through to from-scratch generation")
             style = StyleEncoder.FontStyle.default
         }
 
@@ -297,7 +298,7 @@ final class GlyphGenerator: @unchecked Sendable {
     /// Check if generation is available.
     /// Returns true because template-based generation always works as fallback.
     /// For real AI model availability, use `GlyphGenerator.isModelAvailable()`.
-    var isAvailable: Bool {
+    nonisolated var isAvailable: Bool {
         true  // Template fallback is always available
     }
 
@@ -403,6 +404,9 @@ final class GlyphGenerator: @unchecked Sendable {
         let size = DiffusionParams.imageSize
         let pixelCount = size * size
 
+        // Clamp guidance scale to minimum 1.0 (no guidance) to prevent negative/inverted guidance
+        let guidanceScale = max(1.0, settings.guidanceScale)
+
         // Look up character index
         let charIndex = Self.charToIndex[character] ?? DiffusionParams.nullClassIndex
 
@@ -444,7 +448,7 @@ final class GlyphGenerator: @unchecked Sendable {
 
             // Classifier-free guidance
             var finalVelocity = velocity
-            if settings.guidanceScale > 1.0 {
+            if guidanceScale > 1.0 {
                 let uncondVelocity = try await callUNet(
                     model: model,
                     sample: sample,
@@ -455,7 +459,7 @@ final class GlyphGenerator: @unchecked Sendable {
                 )
                 // guided = uncond + scale * (cond - uncond)
                 for i in 0..<pixelCount {
-                    finalVelocity[i] = uncondVelocity[i] + settings.guidanceScale * (velocity[i] - uncondVelocity[i])
+                    finalVelocity[i] = uncondVelocity[i] + guidanceScale * (velocity[i] - uncondVelocity[i])
                 }
             }
 
@@ -497,11 +501,17 @@ final class GlyphGenerator: @unchecked Sendable {
 
         // Extract velocity output
         guard let velocityFeature = prediction.featureValue(for: "velocity"),
-              let velocityArray = velocityFeature.multiArrayValue else {
+              let velocityMLArray = velocityFeature.multiArrayValue else {
             throw GeneratorError.generationFailed("UNet did not produce velocity output")
         }
 
-        return mlMultiArrayToFloatArray(velocityArray)
+        let velocityArray = try mlMultiArrayToFloatArray(velocityMLArray)
+        let pixelCount = size * size
+        guard velocityArray.count == pixelCount else {
+            throw GeneratorError.outputSizeMismatch(got: velocityArray.count, expected: pixelCount)
+        }
+
+        return velocityArray
     }
 
     // MARK: - Array / MLMultiArray Conversion Helpers
@@ -509,22 +519,26 @@ final class GlyphGenerator: @unchecked Sendable {
     /// Convert a flat Float array to an MLMultiArray with the given shape.
     private func floatArrayToMLMultiArray(_ array: [Float], shape: [NSNumber]) throws -> MLMultiArray {
         let expectedCount = shape.reduce(1) { $0 * $1.intValue }
-        precondition(array.count == expectedCount,
-                     "Array count \(array.count) doesn't match shape \(shape) (expected \(expectedCount))")
+        guard array.count == expectedCount else {
+            throw GeneratorError.shapeMismatch(got: array.count, expected: expectedCount, shape: shape)
+        }
         let mlArray = try MLMultiArray(shape: shape, dataType: .float32)
-        let ptr = mlArray.dataPointer.bindMemory(to: Float.self, capacity: array.count)
-        for i in 0..<array.count {
-            ptr[i] = array[i]
+        mlArray.withUnsafeMutableBufferPointer(ofType: Float.self) { buffer, _ in
+            for i in 0..<array.count {
+                buffer[i] = array[i]
+            }
         }
         return mlArray
     }
 
     /// Convert an MLMultiArray to a flat Float array.
-    private func mlMultiArrayToFloatArray(_ mlArray: MLMultiArray) -> [Float] {
-        precondition(mlArray.dataType == .float32, "Expected float32 MLMultiArray, got \(mlArray.dataType)")
-        let count = mlArray.count
-        let ptr = mlArray.dataPointer.bindMemory(to: Float.self, capacity: count)
-        return Array(UnsafeBufferPointer(start: ptr, count: count))
+    private func mlMultiArrayToFloatArray(_ mlArray: MLMultiArray) throws -> [Float] {
+        guard mlArray.dataType == .float32 else {
+            throw GeneratorError.invalidDataType(expected: "float32", got: "\(mlArray.dataType)")
+        }
+        return mlArray.withUnsafeBufferPointer(ofType: Float.self) { buffer in
+            Array(buffer)
+        }
     }
 
     // MARK: - Noise Generation
@@ -552,7 +566,9 @@ final class GlyphGenerator: @unchecked Sendable {
     /// Convert a diffusion sample in [-1, 1] range to a grayscale CGImage.
     /// Denormalization: pixel = clamp((x + 1) * 127.5, 0, 255)
     private func sampleToGrayscaleImage(_ sample: [Float], width: Int, height: Int) throws -> CGImage {
-        precondition(sample.count == width * height)
+        guard sample.count == width * height else {
+            throw GeneratorError.outputSizeMismatch(got: sample.count, expected: width * height)
+        }
 
         var pixels = [UInt8](repeating: 0, count: width * height)
         for i in 0..<sample.count {
@@ -1026,35 +1042,6 @@ final class GlyphGenerator: @unchecked Sendable {
         return GlyphOutline(contours: interpolatedContours)
     }
 
-    private func createDefaultStyleEmbedding() -> [Float] {
-        // Default neutral style embedding
-        [Float](repeating: 0.5, count: 128)
-    }
-
-    private func createEmbeddingFromGlyph(_ glyph: Glyph) -> [Float] {
-        // Create embedding from glyph properties
-        var embedding = [Float](repeating: 0, count: 128)
-
-        let bounds = glyph.outline.boundingBox
-        let pointCount = glyph.outline.contours.reduce(0) { $0 + $1.points.count }
-
-        // Encode basic geometric features
-        embedding[0] = Float(bounds.width) / 1000.0
-        embedding[1] = Float(bounds.height) / 1000.0
-        embedding[2] = Float(pointCount) / 100.0
-        embedding[3] = Float(glyph.outline.contours.count) / 10.0
-        embedding[4] = Float(glyph.advanceWidth) / 1000.0
-
-        return embedding
-    }
-
-    private func interpolateEmbeddings(_ a: [Float], _ b: [Float], t: Float) -> [Float] {
-        guard a.count == b.count else {
-            return a
-        }
-
-        return zip(a, b).map { $0 * (1 - t) + $1 * t }
-    }
 }
 
 // MARK: - Seeded Random Number Generator

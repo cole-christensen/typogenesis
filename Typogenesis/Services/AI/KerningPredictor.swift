@@ -38,12 +38,10 @@ final class KerningPredictor: Sendable {
 
     /// Parameters for glyph pair rendering
     private enum RenderParams {
-        /// Output image size in pixels
-        static let imageSize: Int = 128
+        /// Output image size in pixels (must match CoreML KerningNet input: 1x1x64x64)
+        static let imageSize: Int = 64
         /// Scale factor for glyph rendering
         static let scaleFactor: CGFloat = 0.8
-        /// Baseline position as percentage of image height (70%)
-        static let baselineRatio: CGFloat = 0.7
     }
 
     /// Parameters for CoreML model inference
@@ -331,9 +329,9 @@ final class KerningPredictor: Sendable {
     }
 
     /// Render a single glyph to a 64x64 grayscale image for model input.
-    // Renders as grayscale since the model expects single-channel input.
-    // The grayscale CGImage is converted to BGRA in createPixelBuffer()
-    // because CVPixelBuffer requires a standard pixel format.
+    ///
+    /// Uses `glyph.outline.cgPath` to correctly render bezier curves (not just line segments).
+    /// Scales relative to `metrics.unitsPerEm` for consistent sizing across fonts.
     private func renderSingleGlyph(
         glyph: Glyph,
         metrics: FontMetrics
@@ -357,34 +355,37 @@ final class KerningPredictor: Sendable {
         context.setFillColor(gray: 1.0, alpha: 1.0)
         context.fill(CGRect(x: 0, y: 0, width: size, height: size))
 
-        // Scale glyph to fit within the image
         let bounds = glyph.outline.boundingBox
         guard bounds.width > 0, bounds.height > 0 else { return context.makeImage() }
 
-        let glyphScale = min(
-            CGFloat(size) * scale / CGFloat(bounds.width),
-            CGFloat(size) * scale / CGFloat(bounds.height)
-        )
-        let offsetX = (CGFloat(size) - CGFloat(bounds.width) * glyphScale) / 2.0 - CGFloat(bounds.minX) * glyphScale
-        let offsetY = (CGFloat(size) - CGFloat(bounds.height) * glyphScale) / 2.0 - CGFloat(bounds.minY) * glyphScale
+        // Use unitsPerEm as reference size for consistent scaling across fonts.
+        // This ensures glyphs are sized relative to the em square, not their own bbox.
+        let safeUnitsPerEm = max(CGFloat(metrics.unitsPerEm), 1)
+        let glyphScale = CGFloat(size) / safeUnitsPerEm * scale
 
-        context.translateBy(x: offsetX, y: offsetY)
-        context.scaleBy(x: glyphScale, y: glyphScale)
+        // Center the glyph within the image. Flip Y since glyph coordinates are
+        // Y-up (typographic) but CGContext bitmap coordinates are Y-down.
+        let scaledWidth = CGFloat(bounds.width) * glyphScale
+        let scaledHeight = CGFloat(bounds.height) * glyphScale
+        let offsetX = (CGFloat(size) - scaledWidth) / 2.0 - CGFloat(bounds.minX) * glyphScale
+        // Y-flip: translate to bottom and negate the scale
+        let offsetY = (CGFloat(size) + scaledHeight) / 2.0 + CGFloat(bounds.minY) * glyphScale
 
-        // Draw glyph contours
-        context.setFillColor(gray: 0.0, alpha: 1.0)
-        for contour in glyph.outline.contours {
-            guard !contour.points.isEmpty else { continue }
-            context.beginPath()
-            context.move(to: contour.points[0].position)
-            for point in contour.points.dropFirst() {
-                context.addLine(to: point.position)
-            }
-            if contour.isClosed {
-                context.closePath()
-            }
-            context.fillPath()
+        // Build transform: translate then scale with Y-flip
+        var transform = CGAffineTransform.identity
+        transform = transform.translatedBy(x: offsetX, y: offsetY)
+        transform = transform.scaledBy(x: glyphScale, y: -glyphScale)
+
+        // Get the full CGPath (handles bezier curves, not just line segments)
+        let glyphPath = glyph.outline.cgPath
+        guard let scaledPath = glyphPath.copy(using: &transform) else {
+            return context.makeImage()
         }
+
+        // Draw the properly transformed glyph
+        context.setFillColor(gray: 0.0, alpha: 1.0)
+        context.addPath(scaledPath)
+        context.fillPath()
 
         return context.makeImage()
     }
@@ -521,7 +522,8 @@ final class KerningPredictor: Sendable {
         return results
     }
 
-    /// Create CVPixelBuffer from CGImage for model input
+    /// Create single-channel grayscale CVPixelBuffer from CGImage for model input.
+    /// The KerningNet model expects (1, 1, 64, 64) grayscale input.
     private func createPixelBuffer(from image: CGImage) throws -> CVPixelBuffer {
         let size = RenderParams.imageSize
 
@@ -535,7 +537,7 @@ final class KerningPredictor: Sendable {
             kCFAllocatorDefault,
             size,
             size,
-            kCVPixelFormatType_32BGRA,
+            kCVPixelFormatType_OneComponent8,
             attrs as CFDictionary,
             &pixelBuffer
         )
@@ -553,13 +555,13 @@ final class KerningPredictor: Sendable {
             height: size,
             bitsPerComponent: 8,
             bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+            space: CGColorSpaceCreateDeviceGray(),
+            bitmapInfo: 0
         ) else {
             throw PredictorError.predictionFailed("Failed to create graphics context")
         }
 
-        // Draw image scaled to target size
+        // Draw grayscale image into the single-channel buffer
         context.interpolationQuality = .high
         context.draw(image, in: CGRect(x: 0, y: 0, width: size, height: size))
 
@@ -754,52 +756,5 @@ final class KerningPredictor: Sendable {
         }
 
         return minGap.isInfinite ? CGFloat(leftGlyph.advanceWidth) : minGap
-    }
-
-    private func renderPair(
-        leftGlyph: Glyph,
-        rightGlyph: Glyph,
-        metrics: FontMetrics,
-        spacing: Int
-    ) -> CGImage? {
-        let size = RenderParams.imageSize
-        // Guard against division by zero
-        let safeUnitsPerEm = max(CGFloat(metrics.unitsPerEm), 1)
-        let scale = CGFloat(size) / safeUnitsPerEm * RenderParams.scaleFactor
-
-        guard let context = CGContext(
-            data: nil,
-            width: size,
-            height: size,
-            bitsPerComponent: 8,
-            bytesPerRow: size * 4,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else {
-            return nil
-        }
-
-        // White background
-        context.setFillColor(CGColor.white)
-        context.fill(CGRect(x: 0, y: 0, width: size, height: size))
-
-        // Set up transform
-        let baseline = CGFloat(size) * RenderParams.baselineRatio
-        context.translateBy(x: 10, y: baseline)
-        context.scaleBy(x: scale, y: -scale)
-
-        // Draw left glyph
-        context.setFillColor(CGColor.black)
-        context.addPath(leftGlyph.outline.cgPath)
-        context.fillPath()
-
-        // Move to right glyph position
-        context.translateBy(x: CGFloat(leftGlyph.advanceWidth + spacing), y: 0)
-
-        // Draw right glyph
-        context.addPath(rightGlyph.outline.cgPath)
-        context.fillPath()
-
-        return context.makeImage()
     }
 }

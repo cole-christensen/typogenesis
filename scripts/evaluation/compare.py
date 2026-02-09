@@ -18,7 +18,7 @@ from PIL import Image, ImageDraw
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-ALL_CHARACTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+ALL_CHARACTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 
 def create_ab_panel(
@@ -103,13 +103,13 @@ def compare_generated_vs_real(
         characters: Characters to compare.
         device: Compute device.
     """
-    from models.glyph_diffusion import FlowMatchingSchedule, sample_euler
+    from models.glyph_diffusion import FlowMatchingScheduler, sample_euler
     from models.glyph_diffusion.config import CHAR_TO_IDX
 
     if device is None:
         device = torch.device("cpu")
     model.eval()
-    schedule = FlowMatchingSchedule()
+    scheduler = FlowMatchingScheduler()
 
     chars_to_compare = [c for c in characters if c in real_images and c in CHAR_TO_IDX]
     if not chars_to_compare:
@@ -123,7 +123,7 @@ def compare_generated_vs_real(
 
     with torch.no_grad():
         x = torch.randn(n, 1, 64, 64, device=device)
-        generated = sample_euler(model, x, char_indices, style, schedule)
+        generated, _ = sample_euler(model, x, char_indices, style, scheduler)
 
     # Convert generated tensors to PIL images
     gen_images = []
@@ -161,7 +161,7 @@ def compare_checkpoints(
         output_path: Path to save comparison.
         device: Compute device.
     """
-    from models.glyph_diffusion import FlowMatchingSchedule, GlyphDiffusionModel, sample_euler
+    from models.glyph_diffusion import FlowMatchingScheduler, GlyphDiffusionModel, sample_euler
     from models.glyph_diffusion.config import CHAR_TO_IDX
 
     if device is None:
@@ -170,7 +170,7 @@ def compare_checkpoints(
         torch.manual_seed(42)
         style_embed = torch.randn(1, 128)
 
-    schedule = FlowMatchingSchedule()
+    scheduler = FlowMatchingScheduler()
     chars = [c for c in characters if c in CHAR_TO_IDX]
     n = len(chars)
     char_indices = torch.tensor([CHAR_TO_IDX[c] for c in chars], device=device)
@@ -191,7 +191,7 @@ def compare_checkpoints(
         model.eval()
 
         with torch.no_grad():
-            generated = sample_euler(model, x.clone(), char_indices, style, schedule)
+            generated, _ = sample_euler(model, x.clone(), char_indices, style, scheduler)
 
         for i in range(n):
             arr = ((generated[i, 0].cpu() + 1) * 127.5).clamp(0, 255).byte().numpy()

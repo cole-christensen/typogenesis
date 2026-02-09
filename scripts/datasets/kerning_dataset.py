@@ -118,7 +118,13 @@ class KerningDataset(Dataset):
             left_img = Image.new("L", (self.image_size, self.image_size), 0)
             right_img = Image.new("L", (self.image_size, self.image_size), 0)
 
+        # Use the same random seed for both glyphs so they get identical
+        # augmentations (rotation, morphology, etc.) — kerning is sensitive
+        # to relative alignment between the pair.
+        seed = torch.randint(0, 2**31, (1,)).item()
+        torch.manual_seed(seed)
         left_tensor = self.transform(left_img)
+        torch.manual_seed(seed)
         right_tensor = self.transform(right_img)
 
         # Normalize kerning value

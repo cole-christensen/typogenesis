@@ -212,7 +212,7 @@ class TestDatasetPreparation:
             [extracted_font_dir], extracted_font_dir.parent, include_zero_pairs=True,
         )
 
-        # May have no entries if font has no kerning
+        assert len(entries) > 0, "Font should have kerning data for this test"
         if len(entries) > 0:
             entry = entries[0]
             assert "left_image" in entry

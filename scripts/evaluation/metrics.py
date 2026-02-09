@@ -253,11 +253,11 @@ def style_consistency(
     Returns:
         Standard deviation of style embeddings across generated chars.
     """
-    from models.glyph_diffusion import FlowMatchingSchedule, sample_euler
+    from models.glyph_diffusion import FlowMatchingScheduler, sample_euler
 
     model.eval()
     style_encoder.eval()
-    schedule = FlowMatchingSchedule()
+    scheduler = FlowMatchingScheduler()
 
     generated_embeddings = []
     batch_size = len(char_indices)
@@ -268,7 +268,7 @@ def style_consistency(
         chars = torch.tensor(char_indices, device=device)
         style = style_embed.expand(batch_size, -1).to(device)
 
-        generated = sample_euler(model, x, chars, style, schedule)
+        generated, _ = sample_euler(model, x, chars, style, scheduler)
 
         # Encode generated glyphs with style encoder
         embeddings = style_encoder(generated)

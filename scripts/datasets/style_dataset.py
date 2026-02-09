@@ -108,7 +108,11 @@ class StyleDataset(Dataset):
         glyphs = []
         for rel_path in selected:
             img_path = self.data_dir / rel_path
-            img = Image.open(img_path)
+            try:
+                img = Image.open(img_path).convert("L")
+            except Exception as e:
+                logger.warning(f"Failed to load style image {img_path}: {e}, using blank")
+                img = Image.new("L", (self.image_size, self.image_size), 0)
             tensor = self.transform(img)
             glyphs.append(tensor)
 

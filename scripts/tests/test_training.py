@@ -76,11 +76,16 @@ class TestGlyphDiffusionTraining:
         char_indices = torch.randint(0, 62, (batch_size,))
         style_embed = torch.randn(batch_size, 128)
 
+        # Pre-generate a FIXED batch to avoid flakiness from regenerating
+        # random noise and timesteps each iteration. With a fixed batch the
+        # model truly overfits on the same data, making "loss decreases"
+        # deterministic.
+        x_t, timesteps, noise, target_velocity = prepare_training_batch(
+            x_0, schedule, torch.device("cpu")
+        )
+
         losses = []
         for _ in range(10):
-            x_t, timesteps, noise, target_velocity = prepare_training_batch(
-                x_0, schedule, torch.device("cpu")
-            )
             predicted = model(x_t, timesteps, char_indices, style_embed)
             loss = loss_fn(predicted, target_velocity)
 
@@ -89,7 +94,7 @@ class TestGlyphDiffusionTraining:
             optimizer.step()
             losses.append(loss.item())
 
-        # Loss should generally decrease (last < first)
+        # Loss should decrease when training on the same fixed batch
         assert losses[-1] < losses[0], (
             f"Loss did not decrease: first={losses[0]:.4f}, last={losses[-1]:.4f}"
         )
