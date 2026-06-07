@@ -87,6 +87,24 @@
 		VARF11223344556677889901 /* VariableFontE2ETests.swift in Sources */ = {isa = PBXBuildFile; fileRef = VARF11223344556677889900 /* VariableFontE2ETests.swift */; };
 		VECT11223344556677889901 /* VectorizationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = VECT11223344556677889900 /* VectorizationTests.swift */; };
 		B8C974DE1D283299A50CE692 /* CloneWizard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7221F07A0FA45105B93E2BB4 /* CloneWizard.swift */; };
+		KEVM11223344556677889901 /* KerningEditorViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = KEVM11223344556677889900 /* KerningEditorViewModel.swift */; };
+		KEVT11223344556677889901 /* KerningEditorViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = KEVT11223344556677889900 /* KerningEditorViewModelTests.swift */; };
+		GNVM11223344556677889901 /* GenerationViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = GNVM11223344556677889900 /* GenerationViewModel.swift */; };
+		HSVM11223344556677889901 /* HandwritingScannerViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = HSVM11223344556677889900 /* HandwritingScannerViewModel.swift */; };
+		EXVM11223344556677889901 /* ExportViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = EXVM11223344556677889900 /* ExportViewModel.swift */; };
+		IFVM11223344556677889901 /* ImportFontViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = IFVM11223344556677889900 /* ImportFontViewModel.swift */; };
+		VFVM11223344556677889901 /* VariableFontEditorViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = VFVM11223344556677889900 /* VariableFontEditorViewModel.swift */; };
+		MEVM11223344556677889901 /* MetricsEditorViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = MEVM11223344556677889900 /* MetricsEditorViewModel.swift */; };
+		CWVM11223344556677889901 /* CloneWizardViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CWVM11223344556677889900 /* CloneWizardViewModel.swift */; };
+		GCRN11223344556677889901 /* GlyphCanvasRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = GCRN11223344556677889900 /* GlyphCanvasRenderer.swift */; };
+		FDSR11223344556677889901 /* FileDialogService.swift in Sources */ = {isa = PBXBuildFile; fileRef = FDSR11223344556677889900 /* FileDialogService.swift */; };
+		GVMT11223344556677889901 /* GenerationViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = GVMT11223344556677889900 /* GenerationViewModelTests.swift */; };
+		HVMT11223344556677889901 /* HandwritingScannerViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = HVMT11223344556677889900 /* HandwritingScannerViewModelTests.swift */; };
+		EVMT11223344556677889901 /* ExportViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EVMT11223344556677889900 /* ExportViewModelTests.swift */; };
+		IVMT11223344556677889901 /* ImportFontViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = IVMT11223344556677889900 /* ImportFontViewModelTests.swift */; };
+		VVMT11223344556677889901 /* VariableFontEditorViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = VVMT11223344556677889900 /* VariableFontEditorViewModelTests.swift */; };
+		MFDS11223344556677889901 /* MockFileDialogService.swift in Sources */ = {isa = PBXBuildFile; fileRef = MFDS11223344556677889900 /* MockFileDialogService.swift */; };
+		MVMT11223344556677889901 /* MetricsEditorViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = MVMT11223344556677889900 /* MetricsEditorViewModelTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -191,6 +209,24 @@
 		VARF11223344556677889900 /* VariableFontE2ETests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VariableFontE2ETests.swift; sourceTree = "<group>"; };
 		VECT11223344556677889900 /* VectorizationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VectorizationTests.swift; sourceTree = "<group>"; };
 		7221F07A0FA45105B93E2BB4 /* CloneWizard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloneWizard.swift; sourceTree = "<group>"; };
+		KEVM11223344556677889900 /* KerningEditorViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KerningEditorViewModel.swift; sourceTree = "<group>"; };
+		KEVT11223344556677889900 /* KerningEditorViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KerningEditorViewModelTests.swift; sourceTree = "<group>"; };
+		GNVM11223344556677889900 /* GenerationViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GenerationViewModel.swift; sourceTree = "<group>"; };
+		HSVM11223344556677889900 /* HandwritingScannerViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HandwritingScannerViewModel.swift; sourceTree = "<group>"; };
+		EXVM11223344556677889900 /* ExportViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportViewModel.swift; sourceTree = "<group>"; };
+		IFVM11223344556677889900 /* ImportFontViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportFontViewModel.swift; sourceTree = "<group>"; };
+		VFVM11223344556677889900 /* VariableFontEditorViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VariableFontEditorViewModel.swift; sourceTree = "<group>"; };
+		MEVM11223344556677889900 /* MetricsEditorViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetricsEditorViewModel.swift; sourceTree = "<group>"; };
+		CWVM11223344556677889900 /* CloneWizardViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloneWizardViewModel.swift; sourceTree = "<group>"; };
+		GCRN11223344556677889900 /* GlyphCanvasRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlyphCanvasRenderer.swift; sourceTree = "<group>"; };
+		FDSR11223344556677889900 /* FileDialogService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileDialogService.swift; sourceTree = "<group>"; };
+		GVMT11223344556677889900 /* GenerationViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GenerationViewModelTests.swift; sourceTree = "<group>"; };
+		HVMT11223344556677889900 /* HandwritingScannerViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HandwritingScannerViewModelTests.swift; sourceTree = "<group>"; };
+		EVMT11223344556677889900 /* ExportViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportViewModelTests.swift; sourceTree = "<group>"; };
+		IVMT11223344556677889900 /* ImportFontViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportFontViewModelTests.swift; sourceTree = "<group>"; };
+		VVMT11223344556677889900 /* VariableFontEditorViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VariableFontEditorViewModelTests.swift; sourceTree = "<group>"; };
+		MFDS11223344556677889900 /* MockFileDialogService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Helpers/MockFileDialogService.swift"; sourceTree = "<group>"; };
+		MVMT11223344556677889900 /* MetricsEditorViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetricsEditorViewModelTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -278,6 +314,14 @@
 			isa = PBXGroup;
 			children = (
 				4798537AC551576CD6866B1C /* GlyphEditorViewModel.swift */,
+				KEVM11223344556677889900 /* KerningEditorViewModel.swift */,
+				GNVM11223344556677889900 /* GenerationViewModel.swift */,
+				HSVM11223344556677889900 /* HandwritingScannerViewModel.swift */,
+				EXVM11223344556677889900 /* ExportViewModel.swift */,
+				IFVM11223344556677889900 /* ImportFontViewModel.swift */,
+				VFVM11223344556677889900 /* VariableFontEditorViewModel.swift */,
+				MEVM11223344556677889900 /* MetricsEditorViewModel.swift */,
+				CWVM11223344556677889900 /* CloneWizardViewModel.swift */,
 			);
 			path = ViewModels;
 			sourceTree = "<group>";
@@ -290,6 +334,7 @@
 				038CDA57471AB9856FA01E72 /* Image */,
 				6715357CFC408217DE9F9FEB /* Path */,
 				C46C2972B7474FF6BED90475 /* Storage */,
+				FDSG11223344556677889900 /* UI */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -313,6 +358,13 @@
 				GLYE11223344556677889900 /* GlyphEditorE2ETests.swift */,
 				53FF13BF73687420150C72F7 /* FontProjectTests.swift */,
 				B688CF29A3C245D8925F3455 /* GlyphEditorViewModelTests.swift */,
+				KEVT11223344556677889900 /* KerningEditorViewModelTests.swift */,
+				GVMT11223344556677889900 /* GenerationViewModelTests.swift */,
+				HVMT11223344556677889900 /* HandwritingScannerViewModelTests.swift */,
+				EVMT11223344556677889900 /* ExportViewModelTests.swift */,
+				IVMT11223344556677889900 /* ImportFontViewModelTests.swift */,
+				VVMT11223344556677889900 /* VariableFontEditorViewModelTests.swift */,
+				MVMT11223344556677889900 /* MetricsEditorViewModelTests.swift */,
 				96F04F91010EDA9DB8304ABA /* GlyphGeneratorTests.swift */,
 				D4DA30BC5E5B7B009E0451B1 /* GlyphGeneratorDiffusionTests.swift */,
 				GLYI11223344556677889900 /* GlyphInterpolationTests.swift */,
@@ -331,6 +383,7 @@
 				HAND11223344556677889900 /* HandwritingScannerE2ETests.swift */,
 				AIGE22334455667788990000 /* AIGenerationE2ETests.swift */,
 				49EA6920CCD72F75246DFCE3 /* WOFF2ExportTests.swift */,
+				MFDS11223344556677889900 /* MockFileDialogService.swift */,
 			);
 			path = TypogenesisTests;
 			sourceTree = "<group>";
@@ -399,6 +452,7 @@
 			isa = PBXGroup;
 			children = (
 				97093A881E28091618243990 /* AccessibilityIdentifiers.swift */,
+				GCRN11223344556677889900 /* GlyphCanvasRenderer.swift */,
 			);
 			path = Utilities;
 			sourceTree = "<group>";
@@ -540,6 +594,14 @@
 			path = Metrics;
 			sourceTree = "<group>";
 		};
+		FDSG11223344556677889900 /* UI */ = {
+			isa = PBXGroup;
+			children = (
+				FDSR11223344556677889900 /* FileDialogService.swift */,
+			);
+			path = UI;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -653,6 +715,7 @@
 				GLYE11223344556677889901 /* GlyphEditorE2ETests.swift in Sources */,
 				62603364B4E02105DA0777F3 /* FontProjectTests.swift in Sources */,
 				52AADF958A0F695BC32FCBDE /* GlyphEditorViewModelTests.swift in Sources */,
+				KEVT11223344556677889901 /* KerningEditorViewModelTests.swift in Sources */,
 				1554554B2F6B15B1B30D8463 /* GlyphGeneratorTests.swift in Sources */,
 				142AB4232B9A768A715D465E /* GlyphGeneratorDiffusionTests.swift in Sources */,
 				6391B7CF333D035B465DC55D /* ImageProcessingTests.swift in Sources */,
@@ -672,6 +735,13 @@
 				AIGE22334455667788990001 /* AIGenerationE2ETests.swift in Sources */,
 				GLYI11223344556677889901 /* GlyphInterpolationTests.swift in Sources */,
 				D9C841C35F97D5F1654B526A /* WOFF2ExportTests.swift in Sources */,
+				GVMT11223344556677889901 /* GenerationViewModelTests.swift in Sources */,
+				HVMT11223344556677889901 /* HandwritingScannerViewModelTests.swift in Sources */,
+				EVMT11223344556677889901 /* ExportViewModelTests.swift in Sources */,
+				IVMT11223344556677889901 /* ImportFontViewModelTests.swift in Sources */,
+				VVMT11223344556677889901 /* VariableFontEditorViewModelTests.swift in Sources */,
+				MVMT11223344556677889901 /* MetricsEditorViewModelTests.swift in Sources */,
+				MFDS11223344556677889901 /* MockFileDialogService.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -706,6 +776,7 @@
 				3E70A6BCBB9C4F278E9D5B21 /* Glyph.swift in Sources */,
 				825FAF41820CA07A86D01242 /* GlyphCanvas.swift in Sources */,
 				2519ED04EE69EF49E6213F92 /* GlyphEditorViewModel.swift in Sources */,
+				KEVM11223344556677889901 /* KerningEditorViewModel.swift in Sources */,
 				1338524D8DCEABB54C1FB13E /* GlyphGenerator.swift in Sources */,
 				23B79F16FDE79B56C836721B /* GlyphGrid.swift in Sources */,
 				4A0609919401D97BB3F8C921 /* GlyphOutline.swift in Sources */,
@@ -739,6 +810,15 @@
 				GLIP11223344556677889901 /* GlyphInterpolator.swift in Sources */,
 				981E7D0A30B787581E0EE921 /* GlyphTemplates.swift in Sources */,
 				857EEC441680052BEE6E5967 /* StrokeBuilder.swift in Sources */,
+				GNVM11223344556677889901 /* GenerationViewModel.swift in Sources */,
+				HSVM11223344556677889901 /* HandwritingScannerViewModel.swift in Sources */,
+				EXVM11223344556677889901 /* ExportViewModel.swift in Sources */,
+				IFVM11223344556677889901 /* ImportFontViewModel.swift in Sources */,
+				VFVM11223344556677889901 /* VariableFontEditorViewModel.swift in Sources */,
+				MEVM11223344556677889901 /* MetricsEditorViewModel.swift in Sources */,
+				FDSR11223344556677889901 /* FileDialogService.swift in Sources */,
+				CWVM11223344556677889901 /* CloneWizardViewModel.swift in Sources */,
+				GCRN11223344556677889901 /* GlyphCanvasRenderer.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

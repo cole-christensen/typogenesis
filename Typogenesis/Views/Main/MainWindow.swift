@@ -20,11 +20,6 @@ struct MainWindow: View {
         .sheet(isPresented: $appState.showImportSheet) {
             ImportFontSheet()
         }
-        .alert("Import Error", isPresented: $appState.showImportError) {
-            Button("OK", role: .cancel) { }
-        } message: {
-            Text(appState.importError ?? "Unknown error")
-        }
         .alert("Project Error", isPresented: $appState.showProjectError) {
             Button("OK", role: .cancel) { }
         } message: {
@@ -225,7 +220,6 @@ struct WelcomeView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.large)
-                .disabled(appState.isImporting)
                 .accessibilityIdentifier(AccessibilityID.Welcome.importFontButton)
 
                 Button("Open Existing Project...") {
@@ -236,16 +230,6 @@ struct WelcomeView: View {
                 .accessibilityIdentifier(AccessibilityID.Welcome.openProjectButton)
             }
             .padding(.top)
-
-            if appState.isImporting {
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .scaleEffect(0.8)
-                    Text("Importing font...")
-                        .foregroundColor(.secondary)
-                }
-                .accessibilityIdentifier(AccessibilityID.Welcome.importingIndicator)
-            }
 
             if !appState.recentProjects.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
